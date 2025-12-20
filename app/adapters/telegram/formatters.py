@@ -21,6 +21,16 @@ def format_message(event: Event, instrument: Instrument, dashboard_url: str) -> 
         flags.append("near_maturity")
     if event.stress_flag:
         flags.append("stress")
+    payload_flags = []
+    if event.payload:
+        if event.payload.get("eligible") is not None:
+            payload_flags.append(f"eligible={event.payload['eligible']}")
+        if event.payload.get("has_call_offer") is not None:
+            payload_flags.append(f"call={event.payload['has_call_offer']}")
+        if event.payload.get("amortization_flag") is not None:
+            payload_flags.append(f"amortization={event.payload['amortization_flag']}")
+    if payload_flags:
+        flags.extend(payload_flags)
     if flags:
         lines.append("Flags: " + ", ".join(flags))
     lines.append(f"Dashboard: {dashboard_url}/instrument/{instrument.isin}")

@@ -24,7 +24,10 @@ class OrderbookOrchestrator:
         self.universe = universe
         self.events = events
         self.telegram = telegram
-        self.history = History()
+        self.history = History(
+            max_points=self.settings.ask_window_history_size,
+            flush_interval_seconds=self.settings.ask_window_flush_seconds,
+        )
         self.client = TInvestClient(settings.tinvest_token, settings.tinvest_account_id, depth=settings.orderbook_depth)
         self._start_time = datetime.utcnow()
         self._last_metrics_log = datetime.utcnow()
@@ -92,6 +95,9 @@ class OrderbookOrchestrator:
             ask_window_min_lots=self.settings.ask_window_min_lots,
             ask_window_min_notional=self.settings.ask_window_min_notional,
             ask_window_kvol=self.settings.ask_window_kvol,
+            novelty_window_updates=self.settings.novelty_window_updates,
+            novelty_window_seconds=self.settings.novelty_window_seconds,
+            alert_hold_updates=self.settings.alert_hold_updates,
             spread_ytm_max_bps=self.settings.spread_ytm_max_bps,
             near_maturity_days=self.settings.near_maturity_days,
             stress_params={
@@ -102,7 +108,7 @@ class OrderbookOrchestrator:
             },
         )
 
-        if event:
+        if event and event.alert:
             await self.events.save_event(event)
             await self.telegram.send_event(event, instrument)
 
