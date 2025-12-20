@@ -100,6 +100,8 @@ def test_tinvest_rest_and_stream_dry_run():
                 issuer=inst.issuer,
                 nominal=inst.nominal,
                 maturity_date=inst.maturity_date,
+                eligible=True,
+                is_shortlisted=True,
             )
             for inst in instruments
         ]
