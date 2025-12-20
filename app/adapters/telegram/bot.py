@@ -9,6 +9,7 @@ from aiogram import Bot
 from .formatters import format_message
 from ...domain.models import Event, Instrument
 from ...settings import Settings
+from ...services.metrics import get_metrics
 
 logger = logging.getLogger(__name__)
 
@@ -22,6 +23,7 @@ class TelegramBot:
         self._global_lock = asyncio.Lock()
         self._last_global_sent: float | None = None
         self._rate_limit_interval = 1.0
+        self.metrics = get_metrics()
 
     def _is_eligible(self, event: Event, instrument: Instrument) -> bool:
         payload_eligible = (event.payload or {}).get("eligible")
@@ -66,6 +68,15 @@ class TelegramBot:
             await self.bot.send_message(chat_id=self.settings.telegram_chat_id, text=message, parse_mode="Markdown")
 
         self._instrument_last_sent[instrument.isin] = asyncio.get_event_loop().time()
+        self.metrics.record_tg_sent()
+
+    async def send_text(self, message: str):
+        await self._wait_global_rate_limit()
+        if not self.enabled:
+            logger.info("[MOCK TG] %s", message)
+        else:
+            await self.bot.send_message(chat_id=self.settings.telegram_chat_id, text=message, parse_mode="Markdown")
+        self.metrics.record_tg_sent()
 
     async def close(self):
         if self.bot:

@@ -16,6 +16,7 @@ from ..services.universe import UniverseService
 from ..adapters.telegram.bot import TelegramBot
 from ..storage.db import async_session_factory
 from ..storage.repo import SnapshotRepository
+from .metrics import get_metrics
 
 logger = logging.getLogger(__name__)
 
@@ -37,6 +38,7 @@ class OrderbookOrchestrator:
         self._dropped_updates = 0
         self._last_snapshot_ts: datetime | None = None
         self._active_subscriptions = 0
+        self.metrics = get_metrics()
 
     async def run_mock_stream(self):
         instruments = self._filter_shortlist(await self.universe.shortlist())
@@ -110,15 +112,21 @@ class OrderbookOrchestrator:
             },
         )
 
+        if event:
+            self.metrics.record_candidate()
+
         if event and event.alert:
             await self.events.save_event(event)
             if event.stress_flag:
                 logger.info("[STRESS ONLY] TG muted for %s", event.isin)
             else:
                 await self.telegram.send_event(event, instrument)
+            self.metrics.record_alert()
 
         self._updates_count += 1
+        now = datetime.utcnow()
         self._last_snapshot_ts = snapshot.ts
+        self.metrics.record_snapshot(ts=now)
         self._maybe_log_metrics()
 
     def _reset_metrics(self, active_subscriptions: int):
@@ -128,6 +136,7 @@ class OrderbookOrchestrator:
         self._dropped_updates = 0
         self._last_snapshot_ts = None
         self._active_subscriptions = active_subscriptions
+        self.metrics.set_stream_reconnects(0)
         logger.info(
             "Orderbook stream starting: %s active subscriptions", self._active_subscriptions
         )
@@ -140,6 +149,7 @@ class OrderbookOrchestrator:
         updates_per_min = self._updates_count / elapsed_minutes
         lag_seconds = (now - self._last_snapshot_ts).total_seconds() if self._last_snapshot_ts else None
         reconnects = getattr(self.client.stream, "reconnect_count", 0)
+        self.metrics.set_stream_reconnects(reconnects)
         logger.info(
             "Orderbook stream metrics | active=%s updates/min=%.2f lag_sec=%s dropped=%s reconnects=%s",
             self._active_subscriptions,
@@ -148,7 +158,23 @@ class OrderbookOrchestrator:
             self._dropped_updates,
             reconnects,
         )
+        asyncio.create_task(self._maybe_send_liveness_alert(now))
         self._last_metrics_log = now
+
+    async def _maybe_send_liveness_alert(self, now: datetime):
+        if self.settings.app_env != "prod":
+            return
+
+        if not self.metrics.should_send_liveness_alert(
+            now=now,
+            cooldown_minutes=self.settings.liveness_alert_cooldown_minutes,
+            threshold_minutes=self.settings.liveness_alert_minutes,
+        ):
+            return
+
+        message = "[ALERT] No orderbook updates received."
+        await self.telegram.send_text(message)
+        self.metrics.mark_liveness_alert_sent(now=now)
 
 
 class OrderbookService:
