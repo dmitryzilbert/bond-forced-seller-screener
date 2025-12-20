@@ -31,18 +31,38 @@ class History:
 
 
 def compute_ask_window(snapshot: OrderBookSnapshot, instrument: Instrument, *, delta_ytm_max_bps: int):
-    if not snapshot.asks:
+    if not snapshot.asks or not instrument.eligible:
         return 0.0, 0.0, 0.0, 0.0
 
-    ytm_bid1 = ytm_from_price(snapshot.best_bid or snapshot.best_ask or instrument.nominal, instrument.nominal, instrument.maturity_date)
-    ytm_ask1 = ytm_from_price(snapshot.best_ask or snapshot.best_bid or instrument.nominal, instrument.nominal, instrument.maturity_date)
+    ytm_bid1 = ytm_from_price(
+        snapshot.best_bid or snapshot.best_ask or instrument.nominal,
+        instrument.nominal,
+        instrument.maturity_date,
+        eligible=instrument.eligible,
+    )
+    ytm_ask1 = ytm_from_price(
+        snapshot.best_ask or snapshot.best_bid or instrument.nominal,
+        instrument.nominal,
+        instrument.maturity_date,
+        eligible=instrument.eligible,
+    )
+    if ytm_bid1 is None or ytm_ask1 is None:
+        return 0.0, 0.0, 0.0, 0.0
+
     ytm_mid = (ytm_bid1 + ytm_ask1) / 2
     ask_window_lots = 0
     ask_window_notional = 0.0
     ytm_event = ytm_mid
 
     for lvl in snapshot.asks:
-        ytm_level = ytm_from_price(lvl.price, instrument.nominal, instrument.maturity_date)
+        ytm_level = ytm_from_price(
+            lvl.price,
+            instrument.nominal,
+            instrument.maturity_date,
+            eligible=instrument.eligible,
+        )
+        if ytm_level is None:
+            continue
         if abs(delta_bps(ytm_mid, ytm_level)) <= delta_ytm_max_bps:
             ask_window_lots += lvl.lots
             ask_window_notional += lvl.lots * instrument.nominal

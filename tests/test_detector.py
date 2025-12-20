@@ -15,7 +15,14 @@ def make_snapshot():
 
 
 def test_candidate_detected():
-    inst = Instrument(isin="RU000A0JX0J2", name="Bond", issuer="A", nominal=1000, maturity_date=date(2030, 1, 1))
+    inst = Instrument(
+        isin="RU000A0JX0J2",
+        name="Bond",
+        issuer="A",
+        nominal=1000,
+        maturity_date=date(2030, 1, 1),
+        eligible=True,
+    )
     settings = get_settings()
     history = History()
     event = detect_event(
