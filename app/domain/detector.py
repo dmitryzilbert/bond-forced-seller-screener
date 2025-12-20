@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from statistics import median
 
 from .models import Event, Instrument, OrderBookSnapshot
@@ -38,13 +38,19 @@ class History:
         self._peer_ytm: dict[str, float] = {}
         self._peer_bucket: dict[str, str] = {}
 
+    def _normalize_ts(self, ts: datetime) -> datetime:
+        if ts.tzinfo is None:
+            return ts.replace(tzinfo=timezone.utc)
+        return ts.astimezone(timezone.utc)
+
     def _history(self, isin: str) -> InstrumentHistory:
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
         if isin not in self._data:
             self._data[isin] = InstrumentHistory(windows=[], candidate_streak=0, last_flush=now)
         return self._data[isin]
 
     def _flush(self, isin: str, *, now: datetime) -> None:
+        now = self._normalize_ts(now)
         history = self._history(isin)
         if (now - history.last_flush) < self.flush_interval:
             return
@@ -55,6 +61,7 @@ class History:
         history.last_flush = now
 
     def push_window(self, isin: str, *, ts: datetime, lots: float, notional: float) -> None:
+        ts = self._normalize_ts(ts)
         history = self._history(isin)
         history.windows.append(WindowPoint(ts=ts, lots=lots, notional=notional))
         if len(history.windows) > self.max_points:
@@ -74,6 +81,7 @@ class History:
         return median(values) if values else None
 
     def rolling_median(self, isin: str, *, metric: str, now: datetime) -> float:
+        now = self._normalize_ts(now)
         self._flush(isin, now=now)
         values = [getattr(p, metric) for p in self._history(isin).windows]
         return median(values) if values else 0.0
@@ -87,6 +95,7 @@ class History:
         window_updates: int,
         window_seconds: int,
     ) -> bool:
+        now = self._normalize_ts(now)
         self._flush(isin, now=now)
         history = self._history(isin)
         if not history.windows:

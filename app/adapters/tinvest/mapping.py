@@ -1,7 +1,33 @@
 from __future__ import annotations
 
-from datetime import datetime, date
+from datetime import datetime, date, timezone
 from ...domain.models import Instrument, OrderBookSnapshot, OrderBookLevel
+
+
+def _parse_ts(value: datetime | str) -> datetime:
+    if isinstance(value, datetime):
+        ts = value
+    else:
+        ts = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+
+    if ts.tzinfo is None:
+        ts = ts.replace(tzinfo=timezone.utc)
+    return ts.astimezone(timezone.utc)
+
+
+def _parse_price(value) -> float:
+    if value is None:
+        return 0.0
+    if isinstance(value, str):
+        return float(value.replace(",", "."))
+    return float(value)
+
+
+def _parse_lots(value) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return 0
 
 
 def map_instrument_payload(payload: dict) -> Instrument:
@@ -29,12 +55,18 @@ def map_instrument_payload(payload: dict) -> Instrument:
 
 
 def map_orderbook_payload(payload: dict) -> OrderBookSnapshot:
-    bids = [OrderBookLevel(price=level[0], lots=level[1]) for level in payload.get("bids", [])]
-    asks = [OrderBookLevel(price=level[0], lots=level[1]) for level in payload.get("asks", [])]
+    bids = [
+        OrderBookLevel(price=_parse_price(level[0]), lots=_parse_lots(level[1]))
+        for level in payload.get("bids", [])
+    ]
+    asks = [
+        OrderBookLevel(price=_parse_price(level[0]), lots=_parse_lots(level[1]))
+        for level in payload.get("asks", [])
+    ]
     return OrderBookSnapshot(
         isin=payload["isin"],
-        ts=datetime.fromisoformat(payload["ts"]),
+        ts=_parse_ts(payload["ts"]),
         bids=bids,
         asks=asks,
-        nominal=float(payload.get("nominal", 1000)),
+        nominal=_parse_price(payload.get("nominal", 1000)),
     )

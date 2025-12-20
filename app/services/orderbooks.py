@@ -46,10 +46,18 @@ class OrderbookOrchestrator:
         instrument_map = {i.isin: i for i in instruments}
         payloads = Path("fixtures/orderbooks.ndjson").read_text().splitlines()
         for line in payloads:
+            if asyncio.current_task() and asyncio.current_task().cancelled():
+                logger.info("Mock orderbook stream cancelled")
+                break
+
             data = json.loads(line)
             snapshot = map_orderbook_payload(data)
             await self._handle_snapshot(snapshot, instrument_map, persist=False)
-            await asyncio.sleep(0.05)
+            try:
+                await asyncio.sleep(0.05)
+            except asyncio.CancelledError:
+                logger.info("Mock orderbook stream cancelled during sleep")
+                break
 
     async def run_prod_stream(self):
         instruments = self._filter_shortlist(await self.universe.shortlist())
@@ -72,6 +80,7 @@ class OrderbookOrchestrator:
                 asks_json=[level.model_dump() for level in snapshot.asks],
                 best_bid=snapshot.best_bid,
                 best_ask=snapshot.best_ask,
+                nominal=snapshot.nominal,
             )
             await repo.add_snapshot(orm)
 

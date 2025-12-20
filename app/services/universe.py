@@ -117,6 +117,8 @@ class UniverseService:
                 eligible_reason = "amortization"
             elif has_call_offer is True:
                 eligible_reason = "call_offer"
+            elif has_call_offer is None:
+                eligible_reason = "call_offer_unknown"
             elif amortization_flag is False and has_call_offer is False:
                 eligible_reason = "ok"
                 eligible = True
@@ -193,8 +195,11 @@ class UniverseService:
         metrics: dict[str, LivenessMetrics] = {}
         for isin, snaps in grouped.items():
             snaps_sorted = sorted(snaps, key=lambda s: s.ts)
-            duration_hours = (snaps_sorted[-1].ts - snaps_sorted[0].ts).total_seconds() / 3600
-            duration_hours = max(duration_hours, 1.0)
+            if len(snaps_sorted) == 1:
+                duration_hours = 24.0
+            else:
+                duration_hours = (snaps_sorted[-1].ts - snaps_sorted[0].ts).total_seconds() / 3600
+                duration_hours = max(duration_hours, 1e-6)
             updates_per_hour = len(snaps_sorted) / duration_hours
             max_notional = max(self._snapshot_notional(s) for s in snaps_sorted)
             metrics[isin] = LivenessMetrics(updates_per_hour=updates_per_hour, max_notional=max_notional)
