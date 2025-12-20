@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import random
 from datetime import datetime
 from typing import Iterable, Callable, Awaitable
 
@@ -32,48 +33,82 @@ class TInvestStream:
         else:
             self.connector = None
         self.dry_run = dry_run
+        self.reconnect_count = 0
+        self._last_active_instruments: list[Instrument] = []
 
     async def subscribe(self, instruments: Iterable[Instrument]):
         if not self.enabled:
             return
 
-        instruments = list(instruments)
-        if not instruments:
+        base_instruments = list(instruments)
+        if not base_instruments:
             return
 
-        headers = {"Authorization": f"Bearer {self.token}"}
         backoff = 1
         max_backoff = 30
+        overload_level = 0
+
+        headers = {"Authorization": f"Bearer {self.token}"}
         while True:
             try:
+                current_instruments = self._select_instruments(base_instruments, overload_level)
+                if not current_instruments:
+                    logger.info("No eligible shortlisted instruments to subscribe")
+                    break
                 async with self.connector(self.WS_URL, extra_headers=headers, ping_interval=20, ping_timeout=20) as ws:
-                    await self._send_subscribe(ws, instruments)
+                    await self._send_subscribe_batches(ws, current_instruments)
+                    self._last_active_instruments = current_instruments
                     backoff = 1
+                    overload_level = 0
                     async for message in ws:
-                        snapshot = self._parse_message(message, instruments)
+                        snapshot = self._parse_message(message, current_instruments)
                         if snapshot:
                             yield snapshot
                     if self.dry_run:
                         break
+            except asyncio.CancelledError:
+                raise
             except Exception as exc:  # pragma: no cover - network errors are expected in prod
                 logger.warning("TInvest stream disconnected: %s", exc)
+                self.reconnect_count += 1
                 if self.dry_run:
                     break
-                await asyncio.sleep(backoff)
+                overload_level = min(overload_level + 1, 3)
+                sleep_for = min(backoff, max_backoff) + random.uniform(0, backoff)
+                await asyncio.sleep(sleep_for)
                 backoff = min(backoff * 2, max_backoff)
 
-    async def _send_subscribe(self, ws, instruments: list[Instrument]):
-        payload = {
-            "subscribeOrderBookRequest": {
-                "subscriptionAction": "SUBSCRIPTION_ACTION_SUBSCRIBE",
-                "instruments": [
-                    {"instrumentId": instrument.figi or instrument.isin, "depth": self.depth}
-                    for instrument in instruments
-                ],
-                "waitingClose": False,
+    async def _send_subscribe_batches(self, ws, instruments: list[Instrument]):
+        batch_size = max(10, 50 // (1 + len(instruments) // 200))
+        for batch in self._chunked(instruments, batch_size):
+            payload = {
+                "subscribeOrderBookRequest": {
+                    "subscriptionAction": "SUBSCRIPTION_ACTION_SUBSCRIBE",
+                    "instruments": [
+                        {"instrumentId": instrument.figi or instrument.isin, "depth": self.depth}
+                        for instrument in batch
+                    ],
+                    "waitingClose": False,
+                }
             }
-        }
-        await ws.send(json.dumps(payload))
+            await ws.send(json.dumps(payload))
+
+    def _select_instruments(self, instruments: Iterable[Instrument], overload_level: int) -> list[Instrument]:
+        filtered = [i for i in instruments if i.is_shortlisted and i.eligible]
+        if not filtered:
+            return []
+        prioritized = sorted(filtered, key=lambda inst: (inst.nominal, inst.isin), reverse=True)
+        limit_factor = 2 ** overload_level
+        allowed = max(10, len(prioritized) // limit_factor)
+        return prioritized[:allowed]
+
+    def _chunked(self, items: list[Instrument], size: int):
+        for idx in range(0, len(items), size):
+            yield items[idx : idx + size]
+
+    @property
+    def active_subscription_count(self) -> int:
+        return len(self._last_active_instruments)
 
     def _parse_message(self, message: str | bytes, instruments: list[Instrument]) -> OrderBookSnapshot | None:
         try:
