@@ -1,28 +1,221 @@
 {% extends "layout.html" %}
 {% block content %}
-<table>
-  <thead>
-    <tr><th>ISIN</th><th>ΔYTM bps</th><th>Ask window lots</th><th>Notional</th><th>Score</th><th>Flags</th></tr>
-  </thead>
-  <tbody>
-  {% for e in events %}
-    <tr>
-      <td><a href="/instrument/{{e.isin}}">{{e.isin}}</a></td>
-      <td>{{"%.1f"|format(e.delta_ytm_bps)}}</td>
-      <td>{{e.ask_lots_window}}</td>
-      <td>{{"%0.0f"|format(e.ask_notional_window)}}</td>
-      <td>{{"%.2f"|format(e.score)}}</td>
-      <td>
-        {% if e.payload %}
-          {% set f = [] %}
-          {% if e.payload.eligible is not none %}{% set _ = f.append('eligible=' ~ e.payload.eligible) %}{% endif %}
-          {% if e.payload.has_call_offer is not none %}{% set _ = f.append('call=' ~ e.payload.has_call_offer) %}{% endif %}
-          {% if e.payload.amortization_flag is not none %}{% set _ = f.append('amortization=' ~ e.payload.amortization_flag) %}{% endif %}
-          {{ ', '.join(f) }}
-        {% endif %}
-      </td>
-    </tr>
-  {% endfor %}
-  </tbody>
-</table>
+<div class="card">
+  <div class="controls">
+    <div class="field">
+      <label>Период</label>
+      <div class="flex">
+        <button class="toggle" data-range="24">Топ-30 / 24ч</button>
+        <button class="toggle" data-range="168">7 дней</button>
+      </div>
+    </div>
+    <div class="field">
+      <label>Сортировка</label>
+      <select id="sortBy">
+        <option value="score">Score (desc)</option>
+        <option value="ytm_event">YTM event (desc)</option>
+      </select>
+    </div>
+    <div class="field">
+      <label>Фильтр stress</label>
+      <select id="stressFilter">
+        <option value="any">Все</option>
+        <option value="true">Только stress</option>
+        <option value="false">Без stress</option>
+      </select>
+    </div>
+    <div class="field">
+      <label>Near maturity</label>
+      <select id="nearFilter">
+        <option value="any">Все</option>
+        <option value="true">Только near</option>
+        <option value="false">Без near</option>
+      </select>
+    </div>
+    <div class="field">
+      <label>Min notional</label>
+      <input type="number" id="minNotional" placeholder="Напр. 500000" />
+    </div>
+    <div class="field">
+      <label>Min ΔYTM bps</label>
+      <input type="number" id="minDelta" placeholder="Напр. 50" />
+    </div>
+    <div class="field">
+      <label>Eligible</label>
+      <select id="eligibleFilter">
+        <option value="eligible">Только eligible</option>
+        <option value="excluded">Только исключённые</option>
+        <option value="all">Все</option>
+      </select>
+    </div>
+    <div class="field">
+      <label>Call offer</label>
+      <select id="callFilter">
+        <option value="any">Любые</option>
+        <option value="true">Только с call</option>
+        <option value="false">Без call</option>
+      </select>
+    </div>
+    <div class="field">
+      <label>Amortization</label>
+      <select id="amortizationFilter">
+        <option value="any">Любые</option>
+        <option value="true">Только амортизир.</option>
+        <option value="false">Без амортизации</option>
+      </select>
+    </div>
+    <div class="field">
+      <label>Eligible reason</label>
+      <input type="text" id="reasonFilter" placeholder="например call_offer" />
+    </div>
+    <div class="field" style="min-width:120px;">
+      <label>&nbsp;</label>
+      <button id="refresh" class="primary">Обновить</button>
+    </div>
+  </div>
+  <p class="status" id="status">Показываются последние 24 часа, только eligible=true.</p>
+</div>
+
+<div class="card table-scroll">
+  <table>
+    <thead>
+      <tr>
+        <th>Время (UTC)</th>
+        <th>ISIN</th>
+        <th>YTM event</th>
+        <th>ΔYTM bps</th>
+        <th>Notional</th>
+        <th>Score</th>
+        <th>Статус</th>
+        <th>Флаги</th>
+        <th>Причина</th>
+      </tr>
+    </thead>
+    <tbody id="eventsBody"></tbody>
+  </table>
+</div>
+
+<script>
+  const initialEvents = {{ events | tojson }};
+
+  const state = {
+    hours: 24,
+    sortBy: 'score',
+    stress: 'any',
+    near: 'any',
+    minNotional: '',
+    minDelta: '',
+    eligible: 'eligible',
+    call: 'any',
+    amortization: 'any',
+    reason: '',
+  };
+
+  const bodyEl = document.getElementById('eventsBody');
+  const statusEl = document.getElementById('status');
+
+  document.querySelectorAll('.toggle').forEach(btn => {
+    btn.addEventListener('click', () => {
+      state.hours = parseInt(btn.dataset.range, 10);
+      refresh();
+    });
+  });
+
+  document.getElementById('sortBy').addEventListener('change', (e) => state.sortBy = e.target.value);
+  document.getElementById('stressFilter').addEventListener('change', (e) => state.stress = e.target.value);
+  document.getElementById('nearFilter').addEventListener('change', (e) => state.near = e.target.value);
+  document.getElementById('minNotional').addEventListener('input', (e) => state.minNotional = e.target.value);
+  document.getElementById('minDelta').addEventListener('input', (e) => state.minDelta = e.target.value);
+  document.getElementById('eligibleFilter').addEventListener('change', (e) => state.eligible = e.target.value);
+  document.getElementById('callFilter').addEventListener('change', (e) => state.call = e.target.value);
+  document.getElementById('amortizationFilter').addEventListener('change', (e) => state.amortization = e.target.value);
+  document.getElementById('reasonFilter').addEventListener('input', (e) => state.reason = e.target.value);
+  document.getElementById('refresh').addEventListener('click', () => refresh());
+
+  function formatNumber(num, digits = 2) {
+    return typeof num === 'number' ? num.toFixed(digits) : '—';
+  }
+
+  function formatBool(value, labelTrue = 'Да', labelFalse = 'Нет') {
+    if (value === true) return `<span class="pill positive">${labelTrue}</span>`;
+    if (value === false) return `<span class="pill negative">${labelFalse}</span>`;
+    return '<span class="pill">n/a</span>';
+  }
+
+  function payloadFlag(payload, key) {
+    if (!payload) return undefined;
+    if (payload[key] === undefined && payload[`${key}_flag`] !== undefined) {
+      return payload[`${key}_flag`];
+    }
+    return payload[key];
+  }
+
+  function render(events) {
+    bodyEl.innerHTML = '';
+    events.forEach(e => {
+      const payload = e.payload || {};
+      const eligible = payloadFlag(payload, 'eligible');
+      const call = payloadFlag(payload, 'has_call_offer');
+      const amortization = payloadFlag(payload, 'amortization_flag');
+      const reason = payload.eligible_reason || '';
+      const flags = [
+        e.stress_flag ? 'stress' : null,
+        e.near_maturity_flag ? 'near' : null,
+        call ? 'call' : null,
+        amortization ? 'amortization' : null,
+      ].filter(Boolean).join(', ');
+
+      const row = document.createElement('tr');
+      row.innerHTML = `
+        <td class="muted">${new Date(e.ts).toISOString().replace('T',' ').replace('Z','')}</td>
+        <td><a href="/instrument/${e.isin}">${e.isin}</a></td>
+        <td>${formatNumber(e.ytm_event, 2)}</td>
+        <td>${formatNumber(e.delta_ytm_bps, 1)}</td>
+        <td>${e.ask_notional_window ? e.ask_notional_window.toLocaleString() : '—'}</td>
+        <td>${formatNumber(e.score, 2)}</td>
+        <td>
+          ${formatBool(eligible, 'Eligible', 'Excluded')}
+          <span class="tag">Call: ${call === undefined ? 'n/a' : call}</span>
+          <span class="tag">Amort: ${amortization === undefined ? 'n/a' : amortization}</span>
+        </td>
+        <td>${flags || '<span class="muted">—</span>'}</td>
+        <td>${reason || '<span class="muted">—</span>'}</td>
+      `;
+      bodyEl.appendChild(row);
+    });
+
+    const rangeText = state.hours === 24 ? 'последние 24 часа' : 'последние 7 дней';
+    const eligibleText = state.eligible === 'eligible' ? 'только eligible=true' : state.eligible === 'excluded' ? 'только исключённые' : 'все бумаги';
+    statusEl.textContent = `Показываются ${rangeText}, ${eligibleText}. Сортировка: ${state.sortBy}.`;
+  }
+
+  async function refresh() {
+    const params = new URLSearchParams();
+    params.set('hours', state.hours);
+    params.set('limit', 30);
+    params.set('sort_by', state.sortBy);
+    params.set('order', 'desc');
+
+    if (state.stress !== 'any') params.set('stress_flag', state.stress === 'true');
+    if (state.near !== 'any') params.set('near_maturity_flag', state.near === 'true');
+    if (state.minNotional) params.set('min_notional', state.minNotional);
+    if (state.minDelta) params.set('min_delta_bps', state.minDelta);
+    if (state.reason) params.set('eligible_reason', state.reason);
+
+    if (state.eligible === 'eligible') params.set('eligible', true);
+    else if (state.eligible === 'excluded') params.set('eligible', false);
+
+    if (state.call === 'true') params.set('has_call_offer', true);
+    else if (state.call === 'false') params.set('has_call_offer', false);
+
+    if (state.amortization === 'true') params.set('amortization_flag', true);
+    else if (state.amortization === 'false') params.set('amortization_flag', false);
+
+    const resp = await fetch(`/api/events?${params.toString()}`);
+    const data = await resp.json();
+    render(data);
+  }
+
+  render(initialEvents);
+</script>
 {% endblock %}

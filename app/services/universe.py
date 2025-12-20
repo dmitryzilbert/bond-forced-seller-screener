@@ -43,7 +43,14 @@ class UniverseService:
     async def load_source_instruments(self) -> List[Instrument]:
         if self.settings.app_env == "mock":
             path = Path("fixtures/instruments.json")
-            data = [Instrument(**item) for item in json.loads(path.read_text())]
+            raw = json.loads(path.read_text())
+            parsed = []
+            for item in raw:
+                maturity = item.get("maturity_date")
+                if isinstance(maturity, str):
+                    item = {**item, "maturity_date": datetime.fromisoformat(maturity).date()}
+                parsed.append(Instrument(**item))
+            data = parsed
             return [self._with_defaults(item) for item in data]
         instruments = await self.client.list_bonds()
         return [self._with_defaults(i) for i in instruments]

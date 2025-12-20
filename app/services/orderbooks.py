@@ -14,6 +14,8 @@ from ..settings import Settings
 from ..services.events import EventService
 from ..services.universe import UniverseService
 from ..adapters.telegram.bot import TelegramBot
+from ..storage.db import async_session_factory
+from ..storage.repo import SnapshotRepository
 
 logger = logging.getLogger(__name__)
 
@@ -147,3 +149,15 @@ class OrderbookOrchestrator:
             reconnects,
         )
         self._last_metrics_log = now
+
+
+class OrderbookService:
+    def __init__(self, settings: Settings):
+        self.settings = settings
+        self.session_factory = async_session_factory()
+
+    async def latest_snapshot(self, isin: str) -> OrderBookSnapshot | None:
+        async with self.session_factory() as session:
+            repo = SnapshotRepository(session)
+            result = await repo.latest(isin)
+            return result
