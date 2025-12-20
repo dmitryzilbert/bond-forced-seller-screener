@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from datetime import date
-from .ytm import days_to_maturity
 
 
 def is_stressed(
@@ -16,11 +15,10 @@ def is_stressed(
     stress_spread_ytm_bps: int,
     stress_dev_peer_bps: int,
 ) -> bool:
-    maturity_days = days_to_maturity(instrument_maturity)
     conditions = [
         ytm_mid * 100 >= stress_ytm_high_pct,
         clean_price_pct <= stress_price_low_pct,
         spread_ytm_bps >= stress_spread_ytm_bps,
-        peer_dev_bps >= stress_dev_peer_bps,
+        abs(peer_dev_bps) >= stress_dev_peer_bps,
     ]
     return any(conditions)

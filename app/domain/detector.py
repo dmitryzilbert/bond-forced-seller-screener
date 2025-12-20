@@ -7,7 +7,7 @@ from statistics import median
 from .models import Event, Instrument, OrderBookSnapshot
 from .scoring import score_event
 from .ytm import delta_bps, ytm_from_price
-from .maturity import is_near_maturity
+from .maturity import is_near_maturity, maturity_bucket
 from .stress import is_stressed
 
 
@@ -35,6 +35,8 @@ class History:
         self.max_points = max_points
         self.flush_interval = timedelta(seconds=flush_interval_seconds)
         self._data: dict[str, InstrumentHistory] = {}
+        self._peer_ytm: dict[str, float] = {}
+        self._peer_bucket: dict[str, str] = {}
 
     def _history(self, isin: str) -> InstrumentHistory:
         now = datetime.utcnow()
@@ -58,6 +60,18 @@ class History:
         if len(history.windows) > self.max_points:
             history.windows = history.windows[-self.max_points :]
         self._flush(isin, now=ts)
+
+    def update_peer(self, isin: str, *, bucket: str, ytm_mid: float, eligible: bool) -> None:
+        if not eligible:
+            self._peer_ytm.pop(isin, None)
+            self._peer_bucket.pop(isin, None)
+            return
+        self._peer_ytm[isin] = ytm_mid
+        self._peer_bucket[isin] = bucket
+
+    def peer_median(self, bucket: str) -> float | None:
+        values = [ytm for isin, ytm in self._peer_ytm.items() if self._peer_bucket.get(isin) == bucket]
+        return median(values) if values else None
 
     def rolling_median(self, isin: str, *, metric: str, now: datetime) -> float:
         self._flush(isin, now=now)
@@ -161,6 +175,10 @@ def detect_event(
     ask_lots, ask_notional, ytm_mid, ytm_event = compute_ask_window(
         snapshot, instrument, delta_ytm_max_bps=delta_ytm_max_bps
     )
+    bucket = maturity_bucket(instrument.maturity_date)
+    history.update_peer(snapshot.isin, bucket=bucket, ytm_mid=ytm_mid, eligible=instrument.eligible)
+    peer_median_ytm = history.peer_median(bucket) or ytm_mid
+    dev_to_peer_bps = delta_bps(peer_median_ytm, ytm_mid)
     novelty = history.novelty(
         snapshot.isin,
         now=snapshot.ts,
@@ -186,7 +204,7 @@ def detect_event(
         clean_price_pct=snapshot.best_ask or 0,
         spread_ytm_bps=spread_ytm,
         instrument_maturity=instrument.maturity_date,
-        peer_dev_bps=spread_ytm,
+        peer_dev_bps=dev_to_peer_bps,
         **stress_params,
     )
     near_flag = is_near_maturity(instrument.maturity_date, near_maturity_days=near_maturity_days)
@@ -218,6 +236,9 @@ def detect_event(
             "best_ask": snapshot.best_ask,
             "ask_window_notional_definition": "cash_value_lots_nominal_price_pct",
             "novelty": novelty,
+            "maturity_bucket": bucket,
+            "peer_median_ytm": peer_median_ytm,
+            "dev_to_peer_bps": dev_to_peer_bps,
         },
         candidate=True,
         alert=alert,

@@ -110,7 +110,10 @@ class OrderbookOrchestrator:
 
         if event and event.alert:
             await self.events.save_event(event)
-            await self.telegram.send_event(event, instrument)
+            if event.stress_flag:
+                logger.info("[STRESS ONLY] TG muted for %s", event.isin)
+            else:
+                await self.telegram.send_event(event, instrument)
 
         self._updates_count += 1
         self._last_snapshot_ts = snapshot.ts
