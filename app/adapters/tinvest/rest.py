@@ -48,9 +48,22 @@ class TInvestRestClient:
                     "nominal": self._parse_money_value(item.get("nominal")) or 0,
                     "maturity_date": self._parse_datetime(item.get("maturityDate")),
                     "segment": item.get("sector"),
+                    "amortization_flag": item.get("amortizationFlag"),
                 }
             )
         return [i for i in instruments if i.get("isin") and i.get("maturity_date")]
+
+    async def get_bond_events(self, instrument_id: str) -> list[dict[str, Any]]:
+        if not self.enabled:
+            return []
+
+        url = "/rest/tinkoff.public.invest.api.contract.v1.InstrumentsService/GetBondEvents"
+        payload = {"instrumentId": instrument_id}
+        logger.info("Fetching bond events for %s", instrument_id)
+        resp = await self._client.post(url, headers=self._headers, json=payload)
+        resp.raise_for_status()
+        data = resp.json()
+        return data.get("events", [])
 
     async def last_prices(self, instrument_ids: Iterable[str]) -> dict[str, float]:
         """Fetch last traded prices for provided instrument ids (figi/uid/isin)."""

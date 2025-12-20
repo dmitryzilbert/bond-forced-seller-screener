@@ -23,6 +23,8 @@ def map_instrument_payload(payload: dict) -> Instrument:
         nominal=float(payload.get("nominal", 1000)),
         maturity_date=maturity_date,
         segment=payload.get("segment"),
+        amortization_flag=payload.get("amortization_flag"),
+        has_call_offer=payload.get("has_call_offer"),
     )
 
 

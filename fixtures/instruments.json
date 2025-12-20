@@ -6,7 +6,9 @@
     "issuer": "Issuer A",
     "nominal": 1000,
     "maturity_date": "2030-12-01",
-    "segment": "corp"
+    "segment": "corp",
+    "amortization_flag": false,
+    "has_call_offer": false
   },
   {
     "isin": "RU000A0JX0J3",
@@ -15,6 +17,8 @@
     "issuer": "Issuer B",
     "nominal": 1000,
     "maturity_date": "2026-06-15",
-    "segment": "corp"
+    "segment": "corp",
+    "amortization_flag": false,
+    "has_call_offer": false
   }
 ]

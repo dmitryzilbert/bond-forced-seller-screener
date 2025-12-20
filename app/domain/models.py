@@ -13,6 +13,12 @@ class Instrument(BaseModel):
     nominal: float = 1000.0
     maturity_date: date
     segment: str | None = None
+    amortization_flag: bool | None = None
+    has_call_offer: bool | None = None
+    eligible: bool = False
+    eligible_reason: str | None = None
+    eligibility_checked_at: datetime | None = None
+    is_shortlisted: bool = False
 
 
 class OrderBookLevel(BaseModel):
