@@ -230,6 +230,7 @@ def detect_event(
             "rolling_lots": rolling_lots,
             "rolling_notional": rolling_notional,
             "eligible": instrument.eligible,
+            "eligible_reason": instrument.eligible_reason,
             "has_call_offer": instrument.has_call_offer,
             "amortization_flag": instrument.amortization_flag,
             "best_bid": snapshot.best_bid,

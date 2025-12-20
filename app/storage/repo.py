@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 import datetime
-from typing import List, Dict
-from sqlalchemy import select, desc, update
+from typing import List, Dict, Optional
+from sqlalchemy import select, desc, update, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from .db import async_session_factory
@@ -37,6 +37,49 @@ class EventRepository:
     async def list_recent(self, limit: int = 30) -> List[Event]:
         async with self.session_factory() as session:
             stmt = select(EventORM).order_by(desc(EventORM.ts)).limit(limit)
+            rows = (await session.execute(stmt)).scalars().all()
+            return [self._to_model(r) for r in rows]
+
+    async def list_filtered(
+        self,
+        *,
+        since: datetime.datetime,
+        limit: int,
+        sort_by: str,
+        order: str,
+        stress_flag: Optional[bool] = None,
+        near_maturity_flag: Optional[bool] = None,
+        min_notional: Optional[float] = None,
+        min_delta_bps: Optional[float] = None,
+        isin: Optional[str] = None,
+    ) -> List[Event]:
+        async with self.session_factory() as session:
+            stmt = select(EventORM).where(EventORM.ts >= since)
+
+            if stress_flag is not None:
+                stmt = stmt.where(EventORM.stress_flag.is_(stress_flag))
+
+            if near_maturity_flag is not None:
+                stmt = stmt.where(EventORM.near_maturity_flag.is_(near_maturity_flag))
+
+            if min_notional is not None:
+                stmt = stmt.where(EventORM.ask_notional_window >= float(min_notional))
+
+            if min_delta_bps is not None:
+                stmt = stmt.where(func.abs(EventORM.delta_ytm_bps) >= float(min_delta_bps))
+
+            if isin:
+                stmt = stmt.where(EventORM.isin == isin)
+
+            sort_column = EventORM.score
+            if sort_by == "ytm_event":
+                sort_column = EventORM.ytm_event
+            elif sort_by == "ts":
+                sort_column = EventORM.ts
+
+            stmt = stmt.order_by(desc(sort_column) if order == "desc" else sort_column)
+            stmt = stmt.limit(limit)
+
             rows = (await session.execute(stmt)).scalars().all()
             return [self._to_model(r) for r in rows]
 
@@ -145,6 +188,18 @@ class SnapshotRepository:
         stmt = select(OrderbookSnapshotORM).where(OrderbookSnapshotORM.isin == isin).order_by(desc(OrderbookSnapshotORM.ts)).limit(limit)
         rows = (await self.session.execute(stmt)).scalars().all()
         return rows
+
+    async def latest(self, isin: str) -> OrderBookSnapshot | None:
+        stmt = (
+            select(OrderbookSnapshotORM)
+            .where(OrderbookSnapshotORM.isin == isin)
+            .order_by(desc(OrderbookSnapshotORM.ts))
+            .limit(1)
+        )
+        row = (await self.session.execute(stmt)).scalar_one_or_none()
+        if row is None:
+            return None
+        return self._to_snapshot(row)
 
     async def list_all(self) -> list[OrderBookSnapshot]:
         stmt = select(OrderbookSnapshotORM)

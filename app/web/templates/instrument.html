@@ -1,28 +1,129 @@
 {% extends "layout.html" %}
 {% block content %}
-<h2>Instrument {{isin}}</h2>
-<table>
-  <thead>
-    <tr><th>Time</th><th>ΔYTM bps</th><th>Ask window</th><th>Score</th><th>Flags</th></tr>
-  </thead>
-  <tbody>
-  {% for e in events %}
-    <tr>
-      <td>{{e.ts}}</td>
-      <td>{{"%.1f"|format(e.delta_ytm_bps)}}</td>
-      <td>{{e.ask_lots_window}} / {{"%0.0f"|format(e.ask_notional_window)}}</td>
-      <td>{{"%.2f"|format(e.score)}}</td>
-      <td>
-        {% if e.payload %}
-          {% set f = [] %}
-          {% if e.payload.eligible is not none %}{% set _ = f.append('eligible=' ~ e.payload.eligible) %}{% endif %}
-          {% if e.payload.has_call_offer is not none %}{% set _ = f.append('call=' ~ e.payload.has_call_offer) %}{% endif %}
-          {% if e.payload.amortization_flag is not none %}{% set _ = f.append('amortization=' ~ e.payload.amortization_flag) %}{% endif %}
-          {{ ', '.join(f) }}
-        {% endif %}
-      </td>
-    </tr>
-  {% endfor %}
-  </tbody>
-</table>
+<div class="grid two">
+  <div class="card">
+    <h2>{{isin}}</h2>
+    <p class="status">Последние события за 7 дней</p>
+    <div class="metric">Best bid: <strong id="bestBid">{{"%.2f"|format(best_bid) if best_bid is not none else "—"}}</strong></div>
+    <div class="metric">Best ask: <strong id="bestAsk">{{"%.2f"|format(best_ask) if best_ask is not none else "—"}}</strong></div>
+    <div class="metric">Обновлено: <strong id="bookTs">{{book_ts or "—"}}</strong></div>
+    <button id="reload" class="primary" style="margin-top:10px;">Обновить</button>
+  </div>
+  <div class="card">
+    <div class="controls">
+      <div class="field">
+        <label>Фильтр stress</label>
+        <select id="stressFilter">
+          <option value="any">Все</option>
+          <option value="true">Только stress</option>
+          <option value="false">Без stress</option>
+        </select>
+      </div>
+      <div class="field">
+        <label>Min notional</label>
+        <input type="number" id="minNotional" placeholder="Напр. 300000" />
+      </div>
+      <div class="field">
+        <label>Min ΔYTM bps</label>
+        <input type="number" id="minDelta" placeholder="Напр. 30" />
+      </div>
+      <div class="field">
+        <label>&nbsp;</label>
+        <button id="applyFilters">Применить</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="card table-scroll">
+  <table>
+    <thead>
+      <tr>
+        <th>Время (UTC)</th>
+        <th>YTM event</th>
+        <th>ΔYTM bps</th>
+        <th>Ask lots/notional</th>
+        <th>Score</th>
+        <th>Флаги</th>
+        <th>Eligible</th>
+        <th>Причина</th>
+      </tr>
+    </thead>
+    <tbody id="eventsBody"></tbody>
+  </table>
+</div>
+
+<script>
+  const initialEvents = {{ events | tojson }};
+  const isin = "{{isin}}";
+  const book = { bid: {{ best_bid if best_bid is not none else 'null' }}, ask: {{ best_ask if best_ask is not none else 'null' }}, ts: {{ ('"' ~ book_ts ~ '"') if book_ts else 'null' }} };
+
+  const state = { stress: 'any', minNotional: '', minDelta: '' };
+
+  const bodyEl = document.getElementById('eventsBody');
+  const bidEl = document.getElementById('bestBid');
+  const askEl = document.getElementById('bestAsk');
+  const tsEl = document.getElementById('bookTs');
+
+  function formatNumber(num, digits = 2) {
+    return typeof num === 'number' ? num.toFixed(digits) : '—';
+  }
+
+  function renderOrderbook(snapshot) {
+    bidEl.textContent = snapshot.bid !== null && snapshot.bid !== undefined ? formatNumber(snapshot.bid) : '—';
+    askEl.textContent = snapshot.ask !== null && snapshot.ask !== undefined ? formatNumber(snapshot.ask) : '—';
+    tsEl.textContent = snapshot.ts || '—';
+  }
+
+  function renderEvents(events) {
+    bodyEl.innerHTML = '';
+    events.forEach(e => {
+      const payload = e.payload || {};
+      const row = document.createElement('tr');
+      const reason = payload.eligible_reason || '';
+      row.innerHTML = `
+        <td class="muted">${new Date(e.ts).toISOString().replace('T',' ').replace('Z','')}</td>
+        <td>${formatNumber(e.ytm_event, 2)}</td>
+        <td>${formatNumber(e.delta_ytm_bps, 1)}</td>
+        <td>${e.ask_lots_window} / ${e.ask_notional_window ? e.ask_notional_window.toLocaleString() : '—'}</td>
+        <td>${formatNumber(e.score, 2)}</td>
+        <td>${[e.stress_flag ? 'stress' : null, e.near_maturity_flag ? 'near' : null].filter(Boolean).join(', ') || '<span class="muted">—</span>'}</td>
+        <td>${payload.eligible === false ? '<span class="pill negative">Excluded</span>' : '<span class="pill positive">Eligible</span>'}</td>
+        <td>${reason || '<span class="muted">—</span>'}</td>
+      `;
+      bodyEl.appendChild(row);
+    });
+  }
+
+  async function reloadData() {
+    const params = new URLSearchParams();
+    params.set('hours', 24 * 7);
+    params.set('limit', 100);
+    params.set('sort_by', 'ts');
+    params.set('order', 'desc');
+    params.set('isin', isin);
+    if (state.stress !== 'any') params.set('stress_flag', state.stress === 'true');
+    if (state.minNotional) params.set('min_notional', state.minNotional);
+    if (state.minDelta) params.set('min_delta_bps', state.minDelta);
+
+    const [eventsResp, instrumentResp] = await Promise.all([
+      fetch(`/api/events?${params.toString()}`),
+      fetch(`/api/instrument/${isin}`),
+    ]);
+
+    const eventsData = await eventsResp.json();
+    const instrumentData = await instrumentResp.json();
+    renderEvents(eventsData);
+    renderOrderbook({ bid: instrumentData.best_bid, ask: instrumentData.best_ask, ts: instrumentData.ts });
+  }
+
+  document.getElementById('stressFilter').addEventListener('change', (e) => state.stress = e.target.value);
+  document.getElementById('minNotional').addEventListener('input', (e) => state.minNotional = e.target.value);
+  document.getElementById('minDelta').addEventListener('input', (e) => state.minDelta = e.target.value);
+  document.getElementById('applyFilters').addEventListener('click', reloadData);
+  document.getElementById('reload').addEventListener('click', reloadData);
+
+  renderEvents(initialEvents);
+  renderOrderbook(book);
+</script>
 {% endblock %}
