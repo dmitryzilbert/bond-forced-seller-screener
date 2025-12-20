@@ -13,6 +13,7 @@ from ..domain.models import Instrument, OrderBookSnapshot
 from ..settings import Settings
 from ..storage.db import async_session_factory
 from ..storage.repo import InstrumentRepository, SnapshotRepository
+from .metrics import get_metrics
 
 logger = logging.getLogger(__name__)
 
@@ -174,6 +175,11 @@ class UniverseService:
         async with self.session_factory() as session:
             repo = InstrumentRepository(session)
             await repo.set_shortlist(shortlisted_isins)
+
+        metrics_tracker = get_metrics()
+        metrics_tracker.set_instrument_totals(
+            eligible=len(eligible), shortlisted=len(shortlisted)
+        )
 
         self.instruments = shortlisted
         return shortlisted, exclusion_reasons
