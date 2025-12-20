@@ -35,6 +35,11 @@ make test
 - `app/storage` — SQLAlchemy ORM, репозитории и миграции Alembic.
 - `app/cli` — Typer CLI с командами run/shortlist/backtest.
 
+### Ask window notional
+
+Notional в AskVolWindow трактуется как денежная стоимость в стакане: `lots * nominal * price_percent / 100`.
+Это определение зафиксировано в детекторе и используется во всех проверках и метриках.
+
 ## Prod каркас
 
 Prod-режим содержит заглушки клиентов T-Invest и может быть расширен при наличии токенов. Все параметры управляются через env.

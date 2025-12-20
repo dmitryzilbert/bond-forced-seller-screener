@@ -19,6 +19,11 @@ class Settings(BaseSettings):
     ask_window_min_lots: int = Field(20, alias="ASK_WINDOW_MIN_LOTS")
     ask_window_min_notional: int = Field(300_000, alias="ASK_WINDOW_MIN_NOTIONAL")
     ask_window_kvol: int = Field(6, alias="ASK_WINDOW_KVOL")
+    ask_window_history_size: int = Field(200, alias="ASK_WINDOW_HISTORY_SIZE")
+    ask_window_flush_seconds: int = Field(600, alias="ASK_WINDOW_FLUSH_SECONDS")
+    novelty_window_updates: int = Field(3, alias="NOVELTY_WINDOW_UPDATES")
+    novelty_window_seconds: int = Field(60, alias="NOVELTY_WINDOW_SECONDS")
+    alert_hold_updates: int = Field(2, alias="ALERT_HOLD_UPDATES")
 
     spread_ytm_max_bps: int = Field(300, alias="SPREAD_YTM_MAX_BPS")
     alert_cooldown_min: int = Field(60, alias="ALERT_COOLDOWN_MIN")

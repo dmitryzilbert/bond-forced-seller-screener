@@ -53,7 +53,7 @@ class Event(BaseModel):
     ts: datetime
     ytm_mid: float
     ytm_event: float
-    delta_ytm_bps: float
+    delta_ytm_bps: int
     ask_lots_window: float
     ask_notional_window: float
     spread_ytm_bps: float

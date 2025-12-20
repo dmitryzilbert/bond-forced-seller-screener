@@ -2,7 +2,7 @@
 {% block content %}
 <table>
   <thead>
-    <tr><th>ISIN</th><th>ΔYTM bps</th><th>Ask window lots</th><th>Notional</th><th>Score</th></tr>
+    <tr><th>ISIN</th><th>ΔYTM bps</th><th>Ask window lots</th><th>Notional</th><th>Score</th><th>Flags</th></tr>
   </thead>
   <tbody>
   {% for e in events %}
@@ -12,6 +12,15 @@
       <td>{{e.ask_lots_window}}</td>
       <td>{{"%0.0f"|format(e.ask_notional_window)}}</td>
       <td>{{"%.2f"|format(e.score)}}</td>
+      <td>
+        {% if e.payload %}
+          {% set f = [] %}
+          {% if e.payload.eligible is not none %}{% set _ = f.append('eligible=' ~ e.payload.eligible) %}{% endif %}
+          {% if e.payload.has_call_offer is not none %}{% set _ = f.append('call=' ~ e.payload.has_call_offer) %}{% endif %}
+          {% if e.payload.amortization_flag is not none %}{% set _ = f.append('amortization=' ~ e.payload.amortization_flag) %}{% endif %}
+          {{ ', '.join(f) }}
+        {% endif %}
+      </td>
     </tr>
   {% endfor %}
   </tbody>

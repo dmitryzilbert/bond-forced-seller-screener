@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from datetime import datetime
+from dataclasses import dataclass
+from datetime import datetime, timedelta
 from statistics import median
-from typing import Iterable
 
 from .models import Event, Instrument, OrderBookSnapshot
 from .scoring import score_event
@@ -16,18 +16,83 @@ class DetectionResult(Event):
     alert: bool = False
 
 
+@dataclass
+class WindowPoint:
+    ts: datetime
+    lots: float
+    notional: float
+
+
+@dataclass
+class InstrumentHistory:
+    windows: list[WindowPoint]
+    candidate_streak: int
+    last_flush: datetime
+
+
 class History:
-    def __init__(self) -> None:
-        self.ask_windows: dict[str, list[float]] = {}
+    def __init__(self, *, max_points: int = 200, flush_interval_seconds: int = 600) -> None:
+        self.max_points = max_points
+        self.flush_interval = timedelta(seconds=flush_interval_seconds)
+        self._data: dict[str, InstrumentHistory] = {}
 
-    def push_window(self, isin: str, value: float) -> None:
-        self.ask_windows.setdefault(isin, []).append(value)
-        if len(self.ask_windows[isin]) > 200:
-            self.ask_windows[isin] = self.ask_windows[isin][-200:]
+    def _history(self, isin: str) -> InstrumentHistory:
+        now = datetime.utcnow()
+        if isin not in self._data:
+            self._data[isin] = InstrumentHistory(windows=[], candidate_streak=0, last_flush=now)
+        return self._data[isin]
 
-    def rolling_median(self, isin: str) -> float:
-        values = self.ask_windows.get(isin, [])
+    def _flush(self, isin: str, *, now: datetime) -> None:
+        history = self._history(isin)
+        if (now - history.last_flush) < self.flush_interval:
+            return
+        cutoff = now - self.flush_interval
+        history.windows = [p for p in history.windows if p.ts >= cutoff]
+        if len(history.windows) > self.max_points:
+            history.windows = history.windows[-self.max_points :]
+        history.last_flush = now
+
+    def push_window(self, isin: str, *, ts: datetime, lots: float, notional: float) -> None:
+        history = self._history(isin)
+        history.windows.append(WindowPoint(ts=ts, lots=lots, notional=notional))
+        if len(history.windows) > self.max_points:
+            history.windows = history.windows[-self.max_points :]
+        self._flush(isin, now=ts)
+
+    def rolling_median(self, isin: str, *, metric: str, now: datetime) -> float:
+        self._flush(isin, now=now)
+        values = [getattr(p, metric) for p in self._history(isin).windows]
         return median(values) if values else 0.0
+
+    def novelty(
+        self,
+        isin: str,
+        *,
+        now: datetime,
+        current_notional: float,
+        window_updates: int,
+        window_seconds: int,
+    ) -> bool:
+        self._flush(isin, now=now)
+        history = self._history(isin)
+        if not history.windows:
+            return False
+
+        cutoff = now - timedelta(seconds=window_seconds)
+        recent = [p.notional for p in history.windows if p.ts >= cutoff]
+        if len(recent) > window_updates:
+            recent = recent[-window_updates:]
+
+        if not recent:
+            return False
+
+        previous_peak = max(recent)
+        return current_notional > previous_peak
+
+    def update_candidate_streak(self, isin: str, *, is_candidate: bool) -> int:
+        history = self._history(isin)
+        history.candidate_streak = history.candidate_streak + 1 if is_candidate else 0
+        return history.candidate_streak
 
 
 def compute_ask_window(snapshot: OrderBookSnapshot, instrument: Instrument, *, delta_ytm_max_bps: int):
@@ -63,9 +128,10 @@ def compute_ask_window(snapshot: OrderBookSnapshot, instrument: Instrument, *, d
         )
         if ytm_level is None:
             continue
-        if abs(delta_bps(ytm_mid, ytm_level)) <= delta_ytm_max_bps:
+        delta = delta_bps(ytm_mid, ytm_level)
+        if delta <= delta_ytm_max_bps:
             ask_window_lots += lvl.lots
-            ask_window_notional += lvl.lots * instrument.nominal
+            ask_window_notional += lvl.lots * instrument.nominal * lvl.price / 100
             ytm_event = max(ytm_event, ytm_level)
 
     return ask_window_lots, ask_window_notional, ytm_mid, ytm_event
@@ -80,22 +146,41 @@ def detect_event(
     ask_window_min_lots: int,
     ask_window_min_notional: int,
     ask_window_kvol: int,
+    novelty_window_updates: int,
+    novelty_window_seconds: int,
+    alert_hold_updates: int,
     spread_ytm_max_bps: int,
     near_maturity_days: int,
     stress_params: dict,
 ) -> DetectionResult | None:
-    ask_lots, ask_notional, ytm_mid, ytm_event = compute_ask_window(snapshot, instrument, delta_ytm_max_bps=delta_ytm_max_bps)
-    history.push_window(snapshot.isin, ask_lots)
-    rolling = history.rolling_median(snapshot.isin)
+    if not instrument.eligible:
+        return None
+
+    rolling_lots = history.rolling_median(snapshot.isin, metric="lots", now=snapshot.ts)
+    rolling_notional = history.rolling_median(snapshot.isin, metric="notional", now=snapshot.ts)
+    ask_lots, ask_notional, ytm_mid, ytm_event = compute_ask_window(
+        snapshot, instrument, delta_ytm_max_bps=delta_ytm_max_bps
+    )
+    novelty = history.novelty(
+        snapshot.isin,
+        now=snapshot.ts,
+        current_notional=ask_notional,
+        window_updates=novelty_window_updates,
+        window_seconds=novelty_window_seconds,
+    )
+    history.push_window(snapshot.isin, ts=snapshot.ts, lots=ask_lots, notional=ask_notional)
 
     candidate = (
         ask_lots >= ask_window_min_lots
         and ask_notional >= ask_window_min_notional
-        and (rolling == 0 or ask_lots >= ask_window_kvol * rolling)
+        and (rolling_lots == 0 or ask_lots >= ask_window_kvol * rolling_lots)
+        and (rolling_notional == 0 or ask_notional >= ask_window_kvol * rolling_notional)
     )
 
+    streak = history.update_candidate_streak(snapshot.isin, is_candidate=candidate)
+
     spread_ytm = abs(delta_bps(ytm_mid, ytm_event))
-    delta_event_bps = delta_bps(ytm_mid, ytm_event)
+    delta_event_bps = int(round(delta_bps(ytm_mid, ytm_event)))
     stress_flag = is_stressed(
         ytm_mid,
         clean_price_pct=snapshot.best_ask or 0,
@@ -110,6 +195,7 @@ def detect_event(
         return None
 
     score = score_event(delta_event_bps, ask_notional, spread_ytm, stress_flag)
+    alert = candidate and novelty and streak >= alert_hold_updates
     event = DetectionResult(
         isin=snapshot.isin,
         ts=snapshot.ts,
@@ -122,8 +208,18 @@ def detect_event(
         score=score,
         stress_flag=stress_flag,
         near_maturity_flag=near_flag,
-        payload={"rolling": rolling},
+        payload={
+            "rolling_lots": rolling_lots,
+            "rolling_notional": rolling_notional,
+            "eligible": instrument.eligible,
+            "has_call_offer": instrument.has_call_offer,
+            "amortization_flag": instrument.amortization_flag,
+            "best_bid": snapshot.best_bid,
+            "best_ask": snapshot.best_ask,
+            "ask_window_notional_definition": "cash_value_lots_nominal_price_pct",
+            "novelty": novelty,
+        },
         candidate=True,
-        alert=candidate,
+        alert=alert,
     )
     return event
