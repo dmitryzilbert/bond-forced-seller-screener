@@ -1,17 +1,27 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, date
 from ...domain.models import Instrument, OrderBookSnapshot, OrderBookLevel
 
 
 def map_instrument_payload(payload: dict) -> Instrument:
+    maturity = payload.get("maturity_date")
+    if isinstance(maturity, str):
+        maturity_date = datetime.fromisoformat(maturity).date()
+    elif isinstance(maturity, datetime):
+        maturity_date = maturity.date()
+    elif isinstance(maturity, date):
+        maturity_date = maturity
+    else:
+        raise ValueError("maturity_date is required in instrument payload")
+
     return Instrument(
         isin=payload.get("isin"),
         figi=payload.get("figi"),
         name=payload.get("name", ""),
         issuer=payload.get("issuer"),
         nominal=float(payload.get("nominal", 1000)),
-        maturity_date=datetime.fromisoformat(payload.get("maturity_date")).date(),
+        maturity_date=maturity_date,
         segment=payload.get("segment"),
     )
 

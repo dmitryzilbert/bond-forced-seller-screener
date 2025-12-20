@@ -60,10 +60,11 @@ class OrderbookOrchestrator:
 
     async def run_prod_stream(self):
         instruments = await self.universe.shortlist()
-        async for snapshot in self.client.stream_orderbooks([i.isin for i in instruments]):
+        async for snapshot in self.client.stream_orderbooks(instruments):
             instrument = next((i for i in instruments if i.isin == snapshot.isin), None)
             if not instrument:
                 continue
+            await self._persist_snapshot(snapshot)
             event = detect_event(
                 snapshot,
                 instrument,
@@ -84,3 +85,20 @@ class OrderbookOrchestrator:
             if event:
                 await self.events.save_event(event)
                 await self.telegram.send_event(event, instrument)
+
+    async def _persist_snapshot(self, snapshot: OrderBookSnapshot):
+        from ..storage.repo import SnapshotRepository
+        from ..storage.schema import OrderbookSnapshotORM
+        from ..storage.db import async_session_factory
+
+        async with async_session_factory() as session:
+            repo = SnapshotRepository(session)
+            orm = OrderbookSnapshotORM(
+                isin=snapshot.isin,
+                ts=snapshot.ts,
+                bids_json=[level.model_dump() for level in snapshot.bids],
+                asks_json=[level.model_dump() for level in snapshot.asks],
+                best_bid=snapshot.best_bid,
+                best_ask=snapshot.best_ask,
+            )
+            await repo.add_snapshot(orm)

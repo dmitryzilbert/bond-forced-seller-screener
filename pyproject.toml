@@ -25,6 +25,7 @@ dependencies = [
     "python-telegram-bot",
     "pydantic>=2",
     "orjson",
+    "websockets",
 ]
 
 [project.optional-dependencies]
