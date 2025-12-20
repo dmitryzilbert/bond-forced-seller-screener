@@ -4,7 +4,7 @@ import asyncio
 import json
 import logging
 import random
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Iterable, Callable, Awaitable
 
 try:  # Optional dependency for environments without network
@@ -20,7 +20,7 @@ logger = logging.getLogger(__name__)
 class TInvestStream:
     WS_URL = "wss://invest-public-api.tinkoff.ru/ws/invest-public-api-v1/marketdata/stream"
 
-    def __init__(self, token: str | None, depth: int = 10, *, connector: Callable[..., Awaitable] | None = None, dry_run: bool = False):
+    def __init__(self, token: str | None, depth: int = 10, *, connector: Callable[..., Awaitable] | None = None, dry_run: bool = False, max_reconnect_attempts: int = 20):
         self.token = token
         self.depth = depth
         self.enabled = bool(token)
@@ -35,6 +35,7 @@ class TInvestStream:
         self.dry_run = dry_run
         self.reconnect_count = 0
         self._last_active_instruments: list[Instrument] = []
+        self.max_reconnect_attempts = max_reconnect_attempts
 
     async def subscribe(self, instruments: Iterable[Instrument]):
         if not self.enabled:
@@ -72,6 +73,9 @@ class TInvestStream:
                 logger.warning("TInvest stream disconnected: %s", exc)
                 self.reconnect_count += 1
                 if self.dry_run:
+                    break
+                if self.reconnect_count >= self.max_reconnect_attempts:
+                    logger.error("TInvest stream reached max reconnect attempts (%s)", self.max_reconnect_attempts)
                     break
                 overload_level = min(overload_level + 1, 3)
                 sleep_for = min(backoff, max_backoff) + random.uniform(0, backoff)
@@ -127,16 +131,19 @@ class TInvestStream:
             return None
 
         ts = self._parse_datetime(orderbook.get("time"))
-        bids = [
-            OrderBookLevel(price=self._parse_quotation(item.get("price")), lots=item.get("quantity", 0))
-            for item in orderbook.get("bids", [])
-            if item.get("price")
-        ]
-        asks = [
-            OrderBookLevel(price=self._parse_quotation(item.get("price")), lots=item.get("quantity", 0))
-            for item in orderbook.get("asks", [])
-            if item.get("price")
-        ]
+        bids = []
+        for item in orderbook.get("bids", []):
+            price = self._parse_quotation(item.get("price"))
+            lots = self._parse_quantity(item.get("quantity", 0))
+            if price and lots > 0:
+                bids.append(OrderBookLevel(price=price, lots=lots))
+
+        asks = []
+        for item in orderbook.get("asks", []):
+            price = self._parse_quotation(item.get("price"))
+            lots = self._parse_quantity(item.get("quantity", 0))
+            if price and lots > 0:
+                asks.append(OrderBookLevel(price=price, lots=lots))
 
         if not bids and not asks:
             logger.debug("Skip empty orderbook update for %s", instrument.isin)
@@ -144,7 +151,7 @@ class TInvestStream:
 
         return OrderBookSnapshot(
             isin=instrument.isin,
-            ts=ts or datetime.utcnow(),
+            ts=ts or datetime.now(timezone.utc),
             bids=bids,
             asks=asks,
             nominal=instrument.nominal,
@@ -153,7 +160,10 @@ class TInvestStream:
     def _parse_datetime(self, value: str | None) -> datetime | None:
         if not value:
             return None
-        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+        ts = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=timezone.utc)
+        return ts.astimezone(timezone.utc)
 
     def _parse_quotation(self, value) -> float:
         if not value:
@@ -161,3 +171,10 @@ class TInvestStream:
         units = int(value.get("units", 0))
         nano = int(value.get("nano", 0))
         return units + nano / 1e9
+
+    def _parse_quantity(self, value) -> int:
+        try:
+            quantity = int(value)
+        except (TypeError, ValueError):
+            return 0
+        return max(quantity, 0)

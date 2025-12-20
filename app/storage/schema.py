@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import date, datetime
 
-from sqlalchemy import String, Integer, Float, Date, DateTime, JSON, Boolean
+from sqlalchemy import String, Integer, Float, Date, DateTime, JSON, Boolean, Index
 from sqlalchemy.orm import Mapped, mapped_column
 from .db import Base
 
@@ -27,6 +27,9 @@ class InstrumentORM(Base):
 
 class OrderbookSnapshotORM(Base):
     __tablename__ = "orderbook_snapshots"
+    __table_args__ = (
+        Index("ix_orderbook_snapshots_isin_ts", "isin", "ts"),
+    )
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     isin: Mapped[str]
     ts: Mapped[datetime] = mapped_column(DateTime)
@@ -34,10 +37,14 @@ class OrderbookSnapshotORM(Base):
     asks_json: Mapped[dict] = mapped_column(JSON)
     best_bid: Mapped[float | None]
     best_ask: Mapped[float | None]
+    nominal: Mapped[float] = mapped_column(Float, default=1000.0)
 
 
 class EventORM(Base):
     __tablename__ = "events"
+    __table_args__ = (
+        Index("ix_events_isin_ts", "isin", "ts"),
+    )
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     isin: Mapped[str]
     ts: Mapped[datetime] = mapped_column(DateTime)

@@ -214,5 +214,5 @@ class SnapshotRepository:
             ts=orm.ts,
             bids=bids,
             asks=asks,
-            nominal=1000.0,
+            nominal=orm.nominal or 1000.0,
         )
