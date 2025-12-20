@@ -28,8 +28,15 @@ def run():
 async def shortlist_rebuild():
     settings = get_settings()
     universe = UniverseService(settings)
-    instruments = await universe.load()
-    typer.echo(f"Loaded {len(instruments)} instruments")
+    summary = await universe.rebuild_shortlist()
+    typer.echo(
+        f"Universe: {summary.universe_size}, eligible: {summary.eligible_size}, shortlisted: {summary.shortlisted_size}"
+    )
+    top_reasons = sorted(summary.exclusion_reasons.items(), key=lambda item: item[1], reverse=True)[:3]
+    if top_reasons:
+        typer.echo("Top exclusion reasons:")
+        for reason, count in top_reasons:
+            typer.echo(f"- {reason}: {count}")
 
 
 @app.command("backtest:replay")

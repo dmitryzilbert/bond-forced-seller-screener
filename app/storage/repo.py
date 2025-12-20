@@ -1,13 +1,13 @@
 from __future__ import annotations
 
 import datetime
-from typing import List
-from sqlalchemy import select, desc
+from typing import List, Dict
+from sqlalchemy import select, desc, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from .db import async_session_factory
-from .schema import EventORM, OrderbookSnapshotORM
-from ..domain.models import Event
+from .schema import EventORM, OrderbookSnapshotORM, InstrumentORM
+from ..domain.models import Event, Instrument, OrderBookLevel, OrderBookSnapshot
 from ..settings import Settings
 
 
@@ -63,6 +63,76 @@ class EventRepository:
         )
 
 
+class InstrumentRepository:
+    def __init__(self, session: AsyncSession):
+        self.session = session
+
+    async def upsert_many(self, instruments: list[Instrument]):
+        for instrument in instruments:
+            existing = await self.session.get(InstrumentORM, instrument.isin)
+            if existing is None:
+                existing = InstrumentORM(isin=instrument.isin)
+                self.session.add(existing)
+            existing.figi = instrument.figi
+            existing.name = instrument.name
+            existing.issuer = instrument.issuer
+            existing.nominal = instrument.nominal
+            existing.maturity_date = instrument.maturity_date
+            existing.segment = instrument.segment
+            existing.updated_at = instrument.eligibility_checked_at
+            existing.amortization_flag = instrument.amortization_flag
+            existing.has_call_offer = instrument.has_call_offer
+            existing.eligible = instrument.eligible
+            existing.eligible_reason = instrument.eligible_reason
+            existing.eligibility_checked_at = instrument.eligibility_checked_at
+            existing.is_shortlisted = instrument.is_shortlisted
+        await self.session.commit()
+
+    async def list_all(self) -> list[Instrument]:
+        stmt = select(InstrumentORM)
+        rows = (await self.session.execute(stmt)).scalars().all()
+        return [self._to_model(r) for r in rows]
+
+    async def list_shortlisted(self) -> list[Instrument]:
+        stmt = select(InstrumentORM).where(InstrumentORM.is_shortlisted.is_(True))
+        rows = (await self.session.execute(stmt)).scalars().all()
+        return [self._to_model(r) for r in rows]
+
+    async def index_by_isin(self) -> Dict[str, InstrumentORM]:
+        stmt = select(InstrumentORM)
+        rows = (await self.session.execute(stmt)).scalars().all()
+        return {row.isin: row for row in rows}
+
+    async def set_shortlist(self, shortlisted_isins: set[str]):
+        stmt_true = update(InstrumentORM).values(is_shortlisted=False)
+        await self.session.execute(stmt_true)
+        if shortlisted_isins:
+            stmt_mark = (
+                update(InstrumentORM)
+                .where(InstrumentORM.isin.in_(list(shortlisted_isins)))
+                .values(is_shortlisted=True)
+            )
+            await self.session.execute(stmt_mark)
+        await self.session.commit()
+
+    def _to_model(self, orm: InstrumentORM) -> Instrument:
+        return Instrument(
+            isin=orm.isin,
+            figi=orm.figi,
+            name=orm.name,
+            issuer=orm.issuer,
+            nominal=orm.nominal,
+            maturity_date=orm.maturity_date,
+            segment=orm.segment,
+            amortization_flag=orm.amortization_flag,
+            has_call_offer=orm.has_call_offer,
+            eligible=orm.eligible,
+            eligible_reason=orm.eligible_reason,
+            eligibility_checked_at=orm.eligibility_checked_at,
+            is_shortlisted=orm.is_shortlisted,
+        )
+
+
 class SnapshotRepository:
     def __init__(self, session: AsyncSession):
         self.session = session
@@ -75,3 +145,19 @@ class SnapshotRepository:
         stmt = select(OrderbookSnapshotORM).where(OrderbookSnapshotORM.isin == isin).order_by(desc(OrderbookSnapshotORM.ts)).limit(limit)
         rows = (await self.session.execute(stmt)).scalars().all()
         return rows
+
+    async def list_all(self) -> list[OrderBookSnapshot]:
+        stmt = select(OrderbookSnapshotORM)
+        rows = (await self.session.execute(stmt)).scalars().all()
+        return [self._to_snapshot(row) for row in rows]
+
+    def _to_snapshot(self, orm: OrderbookSnapshotORM) -> OrderBookSnapshot:
+        bids = [OrderBookLevel(**level) for level in orm.bids_json or []]
+        asks = [OrderBookLevel(**level) for level in orm.asks_json or []]
+        return OrderBookSnapshot(
+            isin=orm.isin,
+            ts=orm.ts,
+            bids=bids,
+            asks=asks,
+            nominal=1000.0,
+        )

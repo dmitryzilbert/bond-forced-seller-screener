@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from datetime import datetime
 from typing import Iterable
 
 from .rest import TInvestRestClient
@@ -32,6 +33,36 @@ class TInvestClient:
             return []
         payloads = await self.rest.list_bonds()
         return [map_instrument_payload(p) for p in payloads]
+
+    async def has_future_call_offer(self, instrument: Instrument) -> bool | None:
+        if not self.rest.enabled:
+            return None
+        instrument_id = instrument.figi or instrument.isin
+        if not instrument_id:
+            return None
+        events = await self.rest.get_bond_events(instrument_id)
+        now = datetime.utcnow().date()
+        for event in events:
+            event_type = event.get("eventType") or event.get("type") or event.get("event_type")
+            if not event_type:
+                continue
+            if str(event_type).upper().endswith("CALL") or str(event_type).upper() == "CALL":
+                date_str = (
+                    event.get("eventDate")
+                    or event.get("callDate")
+                    or event.get("date")
+                    or event.get("recordDate")
+                )
+                if date_str:
+                    try:
+                        event_date = datetime.fromisoformat(str(date_str).replace("Z", "+00:00")).date()
+                        if event_date >= now:
+                            return True
+                    except ValueError:
+                        continue
+                else:
+                    return True
+        return False
 
     async def stream_orderbooks(self, instruments: Iterable[Instrument]):
         if not self.stream.enabled:
