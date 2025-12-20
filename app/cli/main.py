@@ -40,13 +40,25 @@ async def shortlist_rebuild():
 
 
 @app.command("backtest:replay")
-async def backtest_replay(minutes: int = 5, mode: str = "touch"):
+async def backtest_replay(
+    minutes: int = 5,
+    mode: str = "touch",
+    buffer_bps: float = 5.0,
+    volume_cap: float = 1.0,
+    exit_on: str = "mid",
+):
     settings = get_settings()
     session = async_session_factory()()
     event_repo = EventRepository(settings)
     snapshot_repo = SnapshotRepository(session)
     replay = ReplayService(snapshot_repo, event_repo)
-    result = await replay.run(minutes=minutes, mode=mode)  # type: ignore[arg-type]
+    result = await replay.run(
+        minutes=minutes,
+        mode=mode,  # type: ignore[arg-type]
+        buffer_bps=buffer_bps,
+        volume_cap=volume_cap,
+        exit_on=exit_on,  # type: ignore[arg-type]
+    )
     typer.echo(result)
 
 
