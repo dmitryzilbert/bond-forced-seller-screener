@@ -1,0 +1,19 @@
+{% extends "layout.html" %}
+{% block content %}
+<table>
+  <thead>
+    <tr><th>ISIN</th><th>ΔYTM bps</th><th>Ask window lots</th><th>Notional</th><th>Score</th></tr>
+  </thead>
+  <tbody>
+  {% for e in events %}
+    <tr>
+      <td><a href="/instrument/{{e.isin}}">{{e.isin}}</a></td>
+      <td>{{"%.1f"|format(e.delta_ytm_bps)}}</td>
+      <td>{{e.ask_lots_window}}</td>
+      <td>{{"%0.0f"|format(e.ask_notional_window)}}</td>
+      <td>{{"%.2f"|format(e.score)}}</td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% endblock %}

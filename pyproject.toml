@@ -1,0 +1,38 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "bond-forced-seller-screener"
+version = "0.1.0"
+description = "MVP forced seller screener for Russian bonds"
+authors = [{name = "AutoGPT"}]
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi",
+    "uvicorn[standard]",
+    "sqlalchemy[asyncio]>=2.0",
+    "asyncpg",
+    "alembic",
+    "pydantic-settings",
+    "httpx",
+    "aiogram",
+    "jinja2",
+    "typer[all]",
+    "python-dotenv",
+    "pandas",
+    "python-telegram-bot",
+    "pydantic>=2",
+    "orjson",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+    "pytest-asyncio",
+]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+

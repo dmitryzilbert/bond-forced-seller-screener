@@ -1,0 +1,20 @@
+[
+  {
+    "isin": "RU000A0JX0J2",
+    "figi": "BBG000A0JX0J2",
+    "name": "CorpBond1",
+    "issuer": "Issuer A",
+    "nominal": 1000,
+    "maturity_date": "2030-12-01",
+    "segment": "corp"
+  },
+  {
+    "isin": "RU000A0JX0J3",
+    "figi": "BBG000A0JX0J3",
+    "name": "CorpBond2",
+    "issuer": "Issuer B",
+    "nominal": 1000,
+    "maturity_date": "2026-06-15",
+    "segment": "corp"
+  }
+]
