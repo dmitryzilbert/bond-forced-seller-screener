@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
 import logging
 import random
@@ -37,6 +38,14 @@ class TInvestStream:
         self._last_active_instruments: list[Instrument] = []
         self.max_reconnect_attempts = max_reconnect_attempts
 
+    def _build_connect_kwargs(self, headers: dict[str, str]) -> dict[str, dict[str, str]]:
+        params = inspect.signature(self.connector).parameters
+        if "additional_headers" in params:
+            return {"additional_headers": headers}
+        if "extra_headers" in params:
+            return {"extra_headers": headers}
+        return {}
+
     async def subscribe(self, instruments: Iterable[Instrument]):
         if not self.enabled:
             return
@@ -50,13 +59,24 @@ class TInvestStream:
         overload_level = 0
 
         headers = {"Authorization": f"Bearer {self.token}"}
+        subprotocols = ["json"]
+        if websockets is not None and self.connector is websockets.connect:
+            version = getattr(websockets, "__version__", "unknown")
+            logger.info("Starting TInvest stream: websockets version = %s", version)
         while True:
             try:
                 current_instruments = self._select_instruments(base_instruments, overload_level)
                 if not current_instruments:
                     logger.info("No eligible shortlisted instruments to subscribe")
                     break
-                async with self.connector(self.WS_URL, extra_headers=headers, ping_interval=20, ping_timeout=20) as ws:
+                connect_kwargs = self._build_connect_kwargs(headers)
+                async with self.connector(
+                    self.WS_URL,
+                    subprotocols=subprotocols,
+                    ping_interval=20,
+                    ping_timeout=20,
+                    **connect_kwargs,
+                ) as ws:
                     await self._send_subscribe_batches(ws, current_instruments)
                     self._last_active_instruments = current_instruments
                     backoff = 1

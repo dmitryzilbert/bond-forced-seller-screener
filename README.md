@@ -28,6 +28,7 @@ python -c "from app.settings import Settings; s=Settings(); print(s.app_env, boo
 2. Запустите миграции/БД: `make db` (создаст SQLite по умолчанию) или задайте свой Postgres URL.
 3. Стартуйте сервисы: `docker-compose up -d` и `make run`.
 4. Дашборд и API будут использовать реальные инструменты и стаканы через REST/WebSocket T-Invest.
+5. При старте воркера в лог выводится строка вида `websockets version = X.Y.Z` для быстрой диагностики совместимости.
 
 ## Переменные окружения
 См. `.env.example`. К ключевым параметрам добавлены `TINVEST_TOKEN`, `TINVEST_ACCOUNT_ID` (опционально для лимитов), `ORDERBOOK_DEPTH`.
