@@ -36,6 +36,20 @@ async def _shortlist_rebuild():
         typer.echo("Top exclusion reasons:")
         for reason, count in top_reasons:
             typer.echo(f"- {reason}: {count}")
+    missing_reasons = getattr(summary, "missing_reasons", {}) or {}
+    missing_examples = getattr(summary, "missing_examples", []) or []
+    if missing_reasons:
+        top_missing = sorted(missing_reasons.items(), key=lambda item: item[1], reverse=True)[:10]
+        typer.echo("Top missing_* reasons:")
+        for reason, count in top_missing:
+            typer.echo(f"- {reason}: {count}")
+        if missing_examples:
+            typer.echo("Examples with missing data:")
+            for example in missing_examples:
+                missing = ", ".join(example.get("missing", []))
+                typer.echo(f"- {example.get('isin')} / {example.get('figi')}: {missing}")
+    if summary.shortlisted_size == 0 and missing_reasons:
+        typer.echo("shortlisted=0 because missing_data; consider allow_missing_data_to_shortlist=true")
 
 
 @app.command("shortlist:rebuild")

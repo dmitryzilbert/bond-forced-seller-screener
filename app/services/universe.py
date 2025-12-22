@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import List
@@ -30,6 +30,8 @@ class ShortlistSummary:
     eligible_size: int
     shortlisted_size: int
     exclusion_reasons: dict[str, int]
+    missing_reasons: dict[str, int] = field(default_factory=dict)
+    missing_examples: list[dict] = field(default_factory=list)
 
 
 class UniverseService:
@@ -40,6 +42,7 @@ class UniverseService:
         )
         self.session_factory = async_session_factory()
         self.instruments: list[Instrument] = []
+        self._shortlist_flags: dict[str, dict] = {}
 
     async def load_source_instruments(self) -> List[Instrument]:
         if self.settings.app_env == "mock":
@@ -68,6 +71,7 @@ class UniverseService:
             repo = InstrumentRepository(session)
             shortlisted = await repo.list_shortlisted()
         if shortlisted:
+            shortlisted = [self._apply_cached_flags(i) for i in shortlisted]
             self.instruments = shortlisted
             return shortlisted
         if self.settings.app_env == "mock":
@@ -89,14 +93,18 @@ class UniverseService:
                 key = inst.eligible_reason or "missing_data"
                 exclusion_reasons[key] = exclusion_reasons.get(key, 0) + 1
 
-        shortlisted, shortlist_reasons = await self._apply_shortlist(checked)
+        shortlisted, shortlist_reasons, missing_reasons, missing_examples = await self._apply_shortlist(checked)
         for key, value in shortlist_reasons.items():
             exclusion_reasons[key] = exclusion_reasons.get(key, 0) + value
+
+        self._cache_flags(checked)
         return ShortlistSummary(
             universe_size=len(instruments),
             eligible_size=len([i for i in checked if i.eligible]),
             shortlisted_size=len(shortlisted),
             exclusion_reasons=exclusion_reasons,
+            missing_reasons=missing_reasons,
+            missing_examples=missing_examples,
         )
 
     async def _apply_eligibility(self, instruments: list[Instrument]) -> list[Instrument]:
@@ -113,12 +121,20 @@ class UniverseService:
 
             eligible_reason = "missing_data"
             eligible = False
-            if amortization_flag is True:
+            offer_unknown = False
+            if instrument.maturity_date is None:
+                eligible_reason = "missing_maturity_date"
+            elif amortization_flag is True:
                 eligible_reason = "amortization"
             elif has_call_offer is True:
                 eligible_reason = "call_offer"
             elif has_call_offer is None:
-                eligible_reason = "call_offer_unknown"
+                offer_unknown = True
+                if self.settings.exclude_call_offer_unknown:
+                    eligible_reason = "call_offer_unknown"
+                else:
+                    eligible_reason = "ok"
+                    eligible = True
             elif amortization_flag is False and has_call_offer is False:
                 eligible_reason = "ok"
                 eligible = True
@@ -128,6 +144,7 @@ class UniverseService:
                 {
                     "has_call_offer": has_call_offer,
                     "amortization_flag": amortization_flag,
+                    "offer_unknown": offer_unknown,
                     "eligible": eligible,
                     "eligible_reason": eligible_reason,
                     "eligibility_checked_at": now if not (cached and self._should_use_cache(cached, instrument)) else cached.eligibility_checked_at,
@@ -146,28 +163,62 @@ class UniverseService:
         liveness_metrics = await self._collect_liveness_metrics()
         shortlisted: list[Instrument] = []
         exclusion_reasons: dict[str, int] = {}
+        missing_reasons: dict[str, int] = {}
+        missing_examples: list[dict] = []
 
-        def track(reason: str):
+        def track_exclusion(reason: str):
             exclusion_reasons[reason] = exclusion_reasons.get(reason, 0) + 1
 
-        candidates: list[tuple[Instrument, LivenessMetrics | None]] = []
-        for inst in eligible:
-            candidates.append((inst, liveness_metrics.get(inst.isin)))
+        def track_missing(inst: Instrument, reasons: list[str]):
+            for reason in reasons:
+                missing_reasons[reason] = missing_reasons.get(reason, 0) + 1
+            if len(missing_examples) < 5:
+                missing_examples.append(
+                    {
+                        "isin": inst.isin,
+                        "figi": inst.figi,
+                        "missing": list(reasons),
+                    }
+                )
+
+        def shortlist_score(inst: Instrument):
+            metrics = liveness_metrics.get(inst.isin)
+            updates = metrics.updates_per_hour if metrics else 0.0
+            notional = metrics.max_notional if metrics else 0.0
+            enrichment_rank = 1 if not inst.needs_enrichment else 0
+            return (enrichment_rank, updates, notional)
 
         filtered: list[Instrument] = []
-        for inst, metrics in candidates:
+        for inst in eligible:
+            metrics = liveness_metrics.get(inst.isin)
+            missing = self._instrument_missing_reasons(inst)
             if metrics is None:
-                track("missing_data")
+                missing.append("missing_price")
+
+            if missing:
+                inst.missing_reasons = missing
+                inst.needs_enrichment = True
+                track_missing(inst, missing)
+                if not self.settings.allow_missing_data_to_shortlist:
+                    track_exclusion("missing_data")
+                    continue
+            else:
+                inst.missing_reasons = []
+                inst.needs_enrichment = False
+
+            if metrics is None:
+                filtered.append(inst)
                 continue
+
             if metrics.max_notional < self.settings.shortlist_min_notional:
-                track("not_enough_notional")
+                track_exclusion("not_enough_notional")
                 continue
             if metrics.updates_per_hour < self.settings.shortlist_min_updates_per_hour:
-                track("not_enough_updates")
+                track_exclusion("not_enough_updates")
                 continue
             filtered.append(inst)
 
-        filtered.sort(key=lambda item: (liveness_metrics[item.isin].updates_per_hour, liveness_metrics[item.isin].max_notional), reverse=True)
+        filtered.sort(key=shortlist_score, reverse=True)
         shortlisted = filtered[: self.settings.shortlist_max]
         shortlisted_isins = {i.isin for i in shortlisted}
 
@@ -184,7 +235,7 @@ class UniverseService:
         )
 
         self.instruments = shortlisted
-        return shortlisted, exclusion_reasons
+        return shortlisted, exclusion_reasons, missing_reasons, missing_examples
 
     async def _collect_liveness_metrics(self) -> dict[str, LivenessMetrics]:
         snapshots = await self._load_orderbook_snapshots()
@@ -204,6 +255,35 @@ class UniverseService:
             max_notional = max(self._snapshot_notional(s) for s in snaps_sorted)
             metrics[isin] = LivenessMetrics(updates_per_hour=updates_per_hour, max_notional=max_notional)
         return metrics
+
+    def _instrument_missing_reasons(self, instrument: Instrument) -> list[str]:
+        reasons: list[str] = []
+        if not instrument.isin:
+            reasons.append("missing_isin")
+        if not instrument.figi:
+            reasons.append("missing_figi")
+        if instrument.maturity_date is None:
+            reasons.append("missing_maturity_date")
+        return reasons
+
+    def _cache_flags(self, instruments: list[Instrument]) -> None:
+        for inst in instruments:
+            self._shortlist_flags[inst.isin] = {
+                "needs_enrichment": getattr(inst, "needs_enrichment", False),
+                "missing_reasons": list(getattr(inst, "missing_reasons", [])),
+                "offer_unknown": getattr(inst, "offer_unknown", False),
+            }
+
+    def _apply_cached_flags(self, instrument: Instrument) -> Instrument:
+        cached = self._shortlist_flags.get(instrument.isin, {})
+        return self._copy_instrument(
+            instrument,
+            {
+                "needs_enrichment": cached.get("needs_enrichment", False),
+                "missing_reasons": list(cached.get("missing_reasons", [])),
+                "offer_unknown": cached.get("offer_unknown", getattr(instrument, "offer_unknown", False)),
+            },
+        )
 
     async def _load_orderbook_snapshots(self) -> list[OrderBookSnapshot]:
         if self.settings.app_env == "mock":

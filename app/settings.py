@@ -20,6 +20,10 @@ class Settings(BaseSettings):
     shortlist_max: int = Field(500, alias="SHORTLIST_MAX")
     shortlist_min_notional: int = Field(200_000, alias="SHORTLIST_MIN_NOTIONAL")
     shortlist_min_updates_per_hour: int = Field(2, alias="SHORTLIST_MIN_UPDATES_PER_HOUR")
+    allow_missing_data_to_shortlist: bool = Field(False, alias="ALLOW_MISSING_DATA_TO_SHORTLIST")
+    suppress_alerts_when_missing_data: bool = Field(True, alias="SUPPRESS_ALERTS_WHEN_MISSING_DATA")
+    exclude_call_offer_unknown: bool = Field(True, alias="EXCLUDE_CALL_OFFER_UNKNOWN")
+    suppress_alerts_when_offer_unknown: bool = Field(True, alias="SUPPRESS_ALERTS_WHEN_OFFER_UNKNOWN")
 
     delta_ytm_max_bps: int = Field(120, alias="DELTA_YTM_MAX_BPS")
     ask_window_min_lots: int = Field(20, alias="ASK_WINDOW_MIN_LOTS")

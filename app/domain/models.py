@@ -19,6 +19,9 @@ class Instrument(BaseModel):
     eligible_reason: str | None = None
     eligibility_checked_at: datetime | None = None
     is_shortlisted: bool = False
+    missing_reasons: list[str] = Field(default_factory=list)
+    needs_enrichment: bool = False
+    offer_unknown: bool = False
 
 
 class OrderBookLevel(BaseModel):
