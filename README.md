@@ -16,7 +16,11 @@
 3. Скопируйте пример env: `cp .env.example .env` и установите `app_env=mock`.
 4. Запустите приложение: `python -m app.main`.
 5. Запустите тесты: `pytest -q`.
-6. Проверьте загрузку env: `python -c "from app.settings import Settings; s=Settings(); print(s.app_env, bool(s.tinvest_token), bool(s.telegram_bot_token), s.telegram_chat_id)"`.
+6. Проверьте загрузку env:
+
+```bash
+python -c "from app.settings import Settings; s=Settings(); print(s.app_env, bool(s.tinvest_token), bool(s.telegram_bot_token), s.telegram_chat_id)"
+```
 
 ## Prod mode (реальный поток T-Invest)
 
