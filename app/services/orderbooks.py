@@ -122,9 +122,29 @@ class OrderbookOrchestrator:
         )
 
         if event:
+            event.payload = {
+                **(event.payload or {}),
+                "needs_enrichment": getattr(instrument, "needs_enrichment", False),
+                "missing_reasons": getattr(instrument, "missing_reasons", []),
+                "offer_unknown": getattr(instrument, "offer_unknown", False),
+            }
             self.metrics.record_candidate()
 
         if event and event.alert:
+            suppression_reason = self._alert_suppression_reason(instrument)
+            if suppression_reason:
+                event.payload = {
+                    **(event.payload or {}),
+                    "alert_suppressed_reason": suppression_reason,
+                }
+                await self.events.save_event(event)
+                logger.info("[ALERT SUPPRESSED] %s reason=%s", instrument.isin, suppression_reason)
+                self._updates_count += 1
+                now = datetime.utcnow()
+                self._last_snapshot_ts = snapshot.ts
+                self.metrics.record_snapshot(ts=now)
+                self._maybe_log_metrics()
+                return
             await self.events.save_event(event)
             if event.stress_flag:
                 logger.info("[STRESS ONLY] TG muted for %s", event.isin)
@@ -137,6 +157,13 @@ class OrderbookOrchestrator:
         self._last_snapshot_ts = snapshot.ts
         self.metrics.record_snapshot(ts=now)
         self._maybe_log_metrics()
+
+    def _alert_suppression_reason(self, instrument) -> str | None:
+        if getattr(instrument, "needs_enrichment", False) and self.settings.suppress_alerts_when_missing_data:
+            return "missing_data"
+        if getattr(instrument, "offer_unknown", False) and self.settings.suppress_alerts_when_offer_unknown:
+            return "offer_unknown"
+        return None
 
     def _reset_metrics(self, active_subscriptions: int):
         self._start_time = datetime.utcnow()

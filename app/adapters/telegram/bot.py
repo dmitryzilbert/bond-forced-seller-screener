@@ -29,6 +29,12 @@ class TelegramBot:
         payload_eligible = (event.payload or {}).get("eligible")
         if payload_eligible is False:
             return False
+        if getattr(instrument, "needs_enrichment", False) and self.settings.suppress_alerts_when_missing_data:
+            logger.info("[TG SKIP] missing data for %s", instrument.isin)
+            return False
+        if getattr(instrument, "offer_unknown", False) and self.settings.suppress_alerts_when_offer_unknown:
+            logger.info("[TG SKIP] offer unknown for %s", instrument.isin)
+            return False
         return bool(instrument.eligible)
 
     def _in_cooldown(self, instrument: Instrument) -> bool:
