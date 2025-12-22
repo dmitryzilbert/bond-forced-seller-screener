@@ -1,8 +1,14 @@
 from pydantic import Field
-from pydantic_settings import BaseSettings
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        case_sensitive=False,
+    )
+
     app_env: str = Field("mock", alias="APP_ENV")
     log_level: str = Field("INFO", alias="LOG_LEVEL")
     database_url: str = Field("sqlite+aiosqlite:///./mock.db", alias="DATABASE_URL")
@@ -45,10 +51,6 @@ class Settings(BaseSettings):
     liveness_max_stale_seconds: int = Field(180, alias="LIVENESS_MAX_STALE_SECONDS")
     liveness_alert_minutes: int = Field(5, alias="LIVENESS_ALERT_MINUTES")
     liveness_alert_cooldown_minutes: int = Field(30, alias="LIVENESS_ALERT_COOLDOWN_MINUTES")
-
-    class Config:
-        env_file = ".env"
-        case_sensitive = False
 
 
 def get_settings() -> Settings:
