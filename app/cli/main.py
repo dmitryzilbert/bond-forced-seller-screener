@@ -24,8 +24,7 @@ def run():
     uvicorn.run("app.main:app", host="0.0.0.0", port=8000, reload=False)
 
 
-@app.command("shortlist:rebuild")
-async def shortlist_rebuild():
+async def _shortlist_rebuild():
     settings = get_settings()
     universe = UniverseService(settings)
     summary = await universe.rebuild_shortlist()
@@ -39,8 +38,12 @@ async def shortlist_rebuild():
             typer.echo(f"- {reason}: {count}")
 
 
-@app.command("backtest:replay")
-async def backtest_replay(
+@app.command("shortlist:rebuild")
+def shortlist_rebuild():
+    asyncio.run(_shortlist_rebuild())
+
+
+async def _backtest_replay(
     minutes: int = 5,
     mode: str = "touch",
     buffer_bps: float = 5.0,
@@ -60,6 +63,25 @@ async def backtest_replay(
         exit_on=exit_on,  # type: ignore[arg-type]
     )
     typer.echo(result)
+
+
+@app.command("backtest:replay")
+def backtest_replay(
+    minutes: int = 5,
+    mode: str = "touch",
+    buffer_bps: float = 5.0,
+    volume_cap: float = 1.0,
+    exit_on: str = "mid",
+):
+    asyncio.run(
+        _backtest_replay(
+            minutes=minutes,
+            mode=mode,
+            buffer_bps=buffer_bps,
+            volume_cap=volume_cap,
+            exit_on=exit_on,
+        )
+    )
 
 
 def main():
