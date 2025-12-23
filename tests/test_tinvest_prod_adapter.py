@@ -84,6 +84,7 @@ def test_tinvest_rest_and_stream_dry_run():
             rest_transport=transport,
             stream_connector=connector,
             dry_run=True,
+            stream_transport="ws",
         )
 
         instruments = await client.list_bonds()

@@ -20,6 +20,7 @@ from app.storage import db as db_module
 def universe(monkeypatch, tmp_path):
     monkeypatch.setenv("DATABASE_URL", f"sqlite+aiosqlite:///{tmp_path}/test.db")
     monkeypatch.setenv("APP_ENV", "mock")
+    monkeypatch.setenv("TINVEST_STREAM_TRANSPORT", "ws")
     db_module._engine = None
     db_module._session_factory = None
     asyncio.run(db_module.init_db())
@@ -36,6 +37,7 @@ def universe_factory(monkeypatch, tmp_path):
         db_path = tmp_path / f"test_{len(list(tmp_path.iterdir()))}.db"
         monkeypatch.setenv("DATABASE_URL", f"sqlite+aiosqlite:///{db_path}")
         monkeypatch.setenv("APP_ENV", "mock")
+        monkeypatch.setenv("TINVEST_STREAM_TRANSPORT", "ws")
         for key, value in env.items():
             monkeypatch.setenv(key, str(value))
         db_module._engine = None

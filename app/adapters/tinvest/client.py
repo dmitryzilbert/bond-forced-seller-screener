@@ -22,22 +22,41 @@ class TInvestClient:
         rest_transport=None,
         stream_connector=None,
         dry_run: bool = False,
+        stream_transport: str = "grpc",
+        app_env: str = "prod",
+        grpc_target_prod: str | None = None,
+        grpc_target_sandbox: str | None = None,
         ws_url: str | None = None,
         ws_protocol: str | None = None,
         ssl_ca_bundle: str | None = None,
         ssl_insecure: bool = False,
     ):
         self.rest = TInvestRestClient(token, transport=rest_transport)
-        self.stream = TInvestStream(
-            token,
-            depth=depth,
-            connector=stream_connector,
-            dry_run=dry_run,
-            ws_url=ws_url,
-            ws_protocol=ws_protocol,
-            ssl_ca_bundle=ssl_ca_bundle,
-            ssl_insecure=ssl_insecure,
-        )
+        if stream_transport == "grpc":
+            if grpc_target_prod is None or grpc_target_sandbox is None:
+                raise ValueError("gRPC target configuration is required for grpc transport")
+            from .grpc_stream import TInvestGrpcStream
+
+            self.stream = TInvestGrpcStream(
+                token,
+                depth=depth,
+                app_env=app_env,
+                target_prod=grpc_target_prod,
+                target_sandbox=grpc_target_sandbox,
+                ssl_ca_bundle=ssl_ca_bundle,
+                dry_run=dry_run,
+            )
+        else:
+            self.stream = TInvestStream(
+                token,
+                depth=depth,
+                connector=stream_connector,
+                dry_run=dry_run,
+                ws_url=ws_url,
+                ws_protocol=ws_protocol,
+                ssl_ca_bundle=ssl_ca_bundle,
+                ssl_insecure=ssl_insecure,
+            )
         self.account_id = account_id
 
     async def list_bonds(self) -> list[Instrument]:
