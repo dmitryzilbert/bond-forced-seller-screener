@@ -79,7 +79,9 @@ class TInvestStream:
     @staticmethod
     def _normalize_ws_url(ws_url: str) -> str:
         if ws_url.endswith("/ws/"):
-            return ws_url[:-1]
+            return ws_url
+        if ws_url.endswith("/ws"):
+            return f"{ws_url}/"
         return ws_url
 
     def _build_connect_kwargs(self, headers: dict[str, str]) -> dict[str, dict[str, str]]:
