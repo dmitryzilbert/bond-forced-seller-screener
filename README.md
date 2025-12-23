@@ -24,17 +24,19 @@ python -c "from app.settings import Settings; s=Settings(); print(s.app_env, boo
 
 ## Prod mode (реальный поток T-Invest)
 
-1. Задайте окружение: `app_env=prod`, `tinvest_token=<tinkoff_api_token>` (достаточно readonly), при необходимости `orderbook_depth`, `database_url` и `tinvest_ws_url`.
-2. Запустите миграции/БД: `make db` (создаст SQLite по умолчанию) или задайте свой Postgres URL.
-3. Стартуйте сервисы: `docker-compose up -d` и `make run`.
-4. Дашборд и API будут использовать реальные инструменты и стаканы через REST/WebSocket T-Invest.
-5. При старте воркера в лог выводится строка вида `websockets version = X.Y.Z` для быстрой диагностики совместимости.
+1. Задайте окружение: `app_env=prod`, `tinvest_token=<tinkoff_api_token>` (readonly достаточно), при необходимости `orderbook_depth`, `database_url`.
+2. Поток стаканов использует gRPC MarketDataStream (по умолчанию `tinvest_stream_transport=grpc`).
+3. Запустите миграции/БД: `make db` (создаст SQLite по умолчанию) или задайте свой Postgres URL.
+4. Стартуйте сервисы: `docker-compose up -d` и `make run`.
+5. Дашборд и API будут использовать реальные инструменты и стаканы через REST/gRPC T-Invest.
 
 ## Переменные окружения
-См. `.env.example`. К ключевым параметрам добавлены `TINVEST_TOKEN`, `TINVEST_ACCOUNT_ID` (опционально для лимитов), `TINVEST_WS_URL`, `ORDERBOOK_DEPTH`.
-Для WebSocket SSL:
+См. `.env.example`. К ключевым параметрам добавлены `TINVEST_TOKEN`, `TINVEST_ACCOUNT_ID` (опционально для лимитов), `TINVEST_STREAM_TRANSPORT`, `TINVEST_GRPC_TARGET_PROD`, `TINVEST_GRPC_TARGET_SANDBOX`, `ORDERBOOK_DEPTH`.
+Для gRPC SSL:
 - `TINVEST_SSL_CA_BUNDLE` — путь к PEM-бандлу для корпоративного прокси/Windows.
-- `TINVEST_SSL_INSECURE=true` — отключает проверку сертификатов (НЕБЕЗОПАСНО, используйте только для диагностики).
+WebSocket-прокси оставлен для совместимости, но по умолчанию отключён:
+- `TINVEST_WS_URL` — адрес WS proxy (если включите `TINVEST_STREAM_TRANSPORT=ws`).
+- `TINVEST_SSL_INSECURE=true` — отключает проверку сертификатов WS (НЕБЕЗОПАСНО, используйте только для диагностики).
 Для MVP, чтобы shortlist не опустел из-за пропусков данных, можно включить `allow_missing_data_to_shortlist=true` (алерты по таким инструментам подавляются настройками `suppress_alerts_when_missing_data` и `suppress_alerts_when_offer_unknown`).
 
 ## Тесты

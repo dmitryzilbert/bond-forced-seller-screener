@@ -14,6 +14,8 @@ from ..storage.repo import SnapshotRepository, EventRepository
 from ..storage.db import async_session_factory
 
 app = typer.Typer(help="Bond forced seller screener")
+tinvest_app = typer.Typer(help="T-Invest tools")
+app.add_typer(tinvest_app, name="tinvest")
 
 
 @app.command()
@@ -96,6 +98,19 @@ def backtest_replay(
             exit_on=exit_on,
         )
     )
+
+
+@tinvest_app.command("grpc-check")
+def tinvest_grpc_check():
+    settings = get_settings()
+    from ..adapters.tinvest.grpc_stream import build_grpc_credentials, grpc_channel_ready, select_grpc_target
+
+    target = select_grpc_target(settings)
+    credentials, ssl_mode = build_grpc_credentials(settings)
+    token_set = bool(settings.tinvest_token)
+    typer.echo(f"target={target} ssl_mode={ssl_mode} token_set={token_set}")
+    ok = asyncio.run(grpc_channel_ready(target, credentials))
+    raise typer.Exit(code=0 if ok else 1)
 
 
 def main():

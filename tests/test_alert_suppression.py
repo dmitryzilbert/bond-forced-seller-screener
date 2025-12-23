@@ -13,6 +13,7 @@ from app.settings import get_settings
 def test_alert_suppressed_for_missing_data(monkeypatch):
     settings = get_settings()
     settings.app_env = "mock"
+    settings.tinvest_stream_transport = "ws"
     events = AsyncMock()
     events.save_event = AsyncMock()
     telegram = AsyncMock()

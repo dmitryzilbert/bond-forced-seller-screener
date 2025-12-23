@@ -28,6 +28,8 @@ dependencies = [
     "orjson",
     "websockets",
     "aiosqlite",
+    "tinkoff-investments",
+    "grpcio",
 ]
 
 [project.optional-dependencies]
