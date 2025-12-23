@@ -24,6 +24,8 @@ class TInvestClient:
         dry_run: bool = False,
         ws_url: str | None = None,
         ws_protocol: str | None = None,
+        ssl_ca_bundle: str | None = None,
+        ssl_insecure: bool = False,
     ):
         self.rest = TInvestRestClient(token, transport=rest_transport)
         self.stream = TInvestStream(
@@ -33,6 +35,8 @@ class TInvestClient:
             dry_run=dry_run,
             ws_url=ws_url,
             ws_protocol=ws_protocol,
+            ssl_ca_bundle=ssl_ca_bundle,
+            ssl_insecure=ssl_insecure,
         )
         self.account_id = account_id
 
@@ -79,4 +83,3 @@ class TInvestClient:
             return
         async for snapshot in self.stream.subscribe(instruments):
             yield snapshot
-

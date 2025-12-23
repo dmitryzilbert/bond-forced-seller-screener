@@ -32,6 +32,9 @@ python -c "from app.settings import Settings; s=Settings(); print(s.app_env, boo
 
 ## Переменные окружения
 См. `.env.example`. К ключевым параметрам добавлены `TINVEST_TOKEN`, `TINVEST_ACCOUNT_ID` (опционально для лимитов), `ORDERBOOK_DEPTH`.
+Для WebSocket SSL:
+- `TINVEST_SSL_CA_BUNDLE` — путь к PEM-бандлу для корпоративного прокси/Windows.
+- `TINVEST_SSL_INSECURE=true` — отключает проверку сертификатов (НЕБЕЗОПАСНО, используйте только для диагностики).
 Для MVP, чтобы shortlist не опустел из-за пропусков данных, можно включить `allow_missing_data_to_shortlist=true` (алерты по таким инструментам подавляются настройками `suppress_alerts_when_missing_data` и `suppress_alerts_when_offer_unknown`).
 
 ## Тесты
