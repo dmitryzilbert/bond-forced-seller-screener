@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Iterable, Protocol
 
 import grpc
-from tinkoff.invest.grpc import marketdata_pb2, marketdata_pb2_grpc
+from t_tech.invest.grpc import marketdata_pb2, marketdata_pb2_grpc
 
 from ...domain.models import Instrument, OrderBookLevel, OrderBookSnapshot
 

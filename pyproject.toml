@@ -27,7 +27,7 @@ dependencies = [
     "pydantic>=2",
     "orjson",
     "aiosqlite",
-    "tinkoff-investments",
+    "t-tech-investments>=0.3.0",
     "grpcio",
 ]
 
