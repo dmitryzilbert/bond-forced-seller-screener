@@ -15,10 +15,7 @@ class Settings(BaseSettings):
 
     tinvest_token: str | None = Field(None, alias="TINVEST_TOKEN")
     tinvest_account_id: str | None = Field(None, alias="TINVEST_ACCOUNT_ID")
-    tinvest_ws_url: str = Field("wss://invest-public-api.tbank.ru/ws", alias="TINVEST_WS_URL")
-    tinvest_ws_protocol: str = Field("json-proto", alias="TINVEST_WS_PROTOCOL")
     tinvest_ssl_ca_bundle: str | None = Field(None, alias="TINVEST_SSL_CA_BUNDLE")
-    tinvest_ssl_insecure: bool = Field(False, alias="TINVEST_SSL_INSECURE")
     tinvest_grpc_target_prod: str = Field(
         "invest-public-api.tbank.ru:443",
         alias="TINVEST_GRPC_TARGET_PROD",
@@ -27,7 +24,6 @@ class Settings(BaseSettings):
         "sandbox-invest-public-api.tbank.ru:443",
         alias="TINVEST_GRPC_TARGET_SANDBOX",
     )
-    tinvest_stream_transport: str = Field("grpc", alias="TINVEST_STREAM_TRANSPORT")
 
     orderbook_depth: int = Field(10, alias="ORDERBOOK_DEPTH")
     shortlist_max: int = Field(500, alias="SHORTLIST_MAX")

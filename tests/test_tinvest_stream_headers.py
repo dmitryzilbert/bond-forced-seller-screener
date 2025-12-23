@@ -1,69 +1,71 @@
 import asyncio
-from datetime import date
+from datetime import date, datetime
+from types import SimpleNamespace
 
 import pytest
 
-from app.adapters.tinvest.stream import TInvestStream
+pytest.importorskip("grpc")
+
+from app.adapters.tinvest.grpc_stream import TInvestGrpcStream
 from app.domain.models import Instrument
 
 
-async def _new_api_connector(url, *, additional_headers=None, **kwargs):  # pragma: no cover - used for signature
-    return None
-
-
-async def _legacy_api_connector(url, *, extra_headers=None, **kwargs):  # pragma: no cover - used for signature
-    return None
-
-
-def test_build_connect_kwargs_new_api():
-    headers = {"Authorization": "Bearer token"}
-    stream = TInvestStream("token", connector=_new_api_connector)
-
-    connect_kwargs = stream._build_connect_kwargs(headers)
-
-    assert connect_kwargs == {"additional_headers": headers}
-
-
-def test_build_connect_kwargs_legacy_api():
-    headers = {"Authorization": "Bearer token"}
-    stream = TInvestStream("token", connector=_legacy_api_connector)
-
-    connect_kwargs = stream._build_connect_kwargs(headers)
-
-    assert connect_kwargs == {"extra_headers": headers}
-
-
-def test_subscribe_sets_auth_header_and_subprotocols():
+def test_grpc_subscribe_sends_metadata_and_request(monkeypatch):
     captured: dict = {}
 
-    class DummyWS:
-        def __init__(self):
-            self.subprotocol = "json-proto"
-            self.close_code = 1000
-            self.close_reason = "normal"
+    class DummyChannel:
+        async def close(self):
+            captured["closed"] = True
 
-        async def __aenter__(self):
-            return self
+    def fake_secure_channel(target, credentials):
+        captured["target"] = target
+        return DummyChannel()
 
-        async def __aexit__(self, exc_type, exc, tb):
-            return False
+    class DummyStub:
+        def __init__(self, channel):
+            self.channel = channel
 
-        async def send(self, message):
-            captured["sent"] = message
+        def MarketDataStream(self, request_iterator, metadata=None):
+            captured["metadata"] = metadata
 
-        def __aiter__(self):
-            return self
+            async def generator():
+                request = await request_iterator.__anext__()
+                captured["request"] = request
+                yield SimpleNamespace(
+                    orderbook=SimpleNamespace(
+                        figi="figi-test",
+                        instrument_uid="",
+                        instrument_id="",
+                        time=datetime.utcnow(),
+                        bids=[
+                            SimpleNamespace(
+                                price=SimpleNamespace(units=1000, nano=0),
+                                quantity=1,
+                            )
+                        ],
+                        asks=[],
+                    )
+                )
 
-        async def __anext__(self):
-            raise StopAsyncIteration
+            return generator()
 
-    def connector(url, *, subprotocols=None, additional_headers=None, **kwargs):
-        captured["url"] = url
-        captured["subprotocols"] = subprotocols
-        captured["headers"] = additional_headers
-        return DummyWS()
+    monkeypatch.setattr(
+        "app.adapters.tinvest.grpc_stream.grpc.aio.secure_channel",
+        fake_secure_channel,
+    )
+    monkeypatch.setattr(
+        "app.adapters.tinvest.grpc_stream.marketdata_pb2_grpc.MarketDataStreamServiceStub",
+        DummyStub,
+    )
 
-    stream = TInvestStream("secret", depth=1, connector=connector, dry_run=True)
+    stream = TInvestGrpcStream(
+        "secret",
+        depth=1,
+        app_env="prod",
+        target_prod="prod.example:443",
+        target_sandbox="sandbox.example:443",
+        dry_run=True,
+    )
     instrument = Instrument(
         isin="RU000A0TEST0",
         figi="figi-test",
@@ -77,10 +79,14 @@ def test_subscribe_sets_auth_header_and_subprotocols():
 
     async def _run():
         agen = stream.subscribe([instrument])
-        with pytest.raises(StopAsyncIteration):
-            await agen.__anext__()
+        snapshot = await agen.__anext__()
+        assert snapshot.isin == instrument.isin
+        await agen.aclose()
 
     asyncio.run(_run())
 
-    assert captured["headers"]["Authorization"].startswith("Bearer ")
-    assert "json-proto" in captured["subprotocols"]
+    assert captured["metadata"] == (("authorization", "Bearer secret"),)
+    request = captured["request"]
+    instruments = request.subscribe_order_book_request.instruments
+    assert instruments[0].figi == instrument.figi
+    assert instruments[0].depth == 1
