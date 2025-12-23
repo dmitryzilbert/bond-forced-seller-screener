@@ -5,8 +5,12 @@ import inspect
 import json
 import logging
 import random
+import ssl
 from datetime import datetime, timezone
-from typing import Iterable, Callable, Awaitable
+from types import SimpleNamespace
+from typing import Iterable, Callable, Awaitable, Protocol
+
+import certifi
 
 try:  # Optional dependency for environments without network
     import websockets
@@ -18,6 +22,19 @@ except ImportError:  # pragma: no cover - handled in __init__
 from ...domain.models import Instrument, OrderBookLevel, OrderBookSnapshot
 
 logger = logging.getLogger(__name__)
+
+
+class _SslSettings(Protocol):
+    tinvest_ssl_ca_bundle: str | None
+    tinvest_ssl_insecure: bool
+
+
+def build_ssl_context(settings: _SslSettings) -> tuple[ssl.SSLContext, str]:
+    if settings.tinvest_ssl_insecure:
+        return ssl._create_unverified_context(), "insecure"
+    if settings.tinvest_ssl_ca_bundle:
+        return ssl.create_default_context(cafile=settings.tinvest_ssl_ca_bundle), "custom_bundle"
+    return ssl.create_default_context(cafile=certifi.where()), "certifi"
 
 
 class TInvestStream:
@@ -34,6 +51,8 @@ class TInvestStream:
         max_reconnect_attempts: int = 20,
         ws_url: str | None = None,
         ws_protocol: str | None = None,
+        ssl_ca_bundle: str | None = None,
+        ssl_insecure: bool = False,
     ):
         self.token = token
         self.depth = depth
@@ -52,6 +71,10 @@ class TInvestStream:
         self.max_reconnect_attempts = max_reconnect_attempts
         self.ws_url = ws_url or self.DEFAULT_WS_URL
         self.subprotocol = ws_protocol or self.DEFAULT_SUBPROTOCOL
+        self._ssl_settings = SimpleNamespace(
+            tinvest_ssl_ca_bundle=ssl_ca_bundle,
+            tinvest_ssl_insecure=ssl_insecure,
+        )
 
     def _build_connect_kwargs(self, headers: dict[str, str]) -> dict[str, dict[str, str]]:
         params = inspect.signature(self.connector).parameters
@@ -75,21 +98,24 @@ class TInvestStream:
 
         headers = {"Authorization": f"Bearer {self.token}"}
         subprotocols = [self.subprotocol]
+        ssl_ctx, ssl_mode = build_ssl_context(self._ssl_settings)
         if websockets is not None and self.connector is websockets.connect:
             version = getattr(websockets, "__version__", "unknown")
             logger.info(
-                "Starting TInvest stream: url=%s subprotocol=%s token_set=%s websockets=%s",
+                "Starting TInvest stream: url=%s subprotocol=%s token_set=%s websockets=%s ssl_mode=%s",
                 self.ws_url,
                 self.subprotocol,
                 bool(self.token),
                 version,
+                ssl_mode,
             )
         else:
             logger.info(
-                "Starting TInvest stream: url=%s subprotocol=%s token_set=%s",
+                "Starting TInvest stream: url=%s subprotocol=%s token_set=%s ssl_mode=%s",
                 self.ws_url,
                 self.subprotocol,
                 bool(self.token),
+                ssl_mode,
             )
         while True:
             ws = None
@@ -104,6 +130,7 @@ class TInvestStream:
                     subprotocols=subprotocols,
                     ping_interval=20,
                     ping_timeout=20,
+                    ssl=ssl_ctx,
                     **connect_kwargs,
                 ) as ws:
                     server_subprotocol = getattr(ws, "subprotocol", None)

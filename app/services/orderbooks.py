@@ -37,6 +37,8 @@ class OrderbookOrchestrator:
             depth=settings.orderbook_depth,
             ws_url=settings.tinvest_ws_url,
             ws_protocol=settings.tinvest_ws_protocol,
+            ssl_ca_bundle=settings.tinvest_ssl_ca_bundle,
+            ssl_insecure=settings.tinvest_ssl_insecure,
         )
         self._start_time = datetime.utcnow()
         self._last_metrics_log = datetime.utcnow()
