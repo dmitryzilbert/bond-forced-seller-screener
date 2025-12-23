@@ -36,3 +36,11 @@ async def init_db():
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
     logger.info("DB initialized at %s", engine.url)
+
+
+async def close_db():
+    global _engine
+    if _engine is not None:
+        await _engine.dispose()
+        logger.info("DB engine disposed")
+        _engine = None
