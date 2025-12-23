@@ -38,7 +38,11 @@ class UniverseService:
     def __init__(self, settings: Settings):
         self.settings = settings
         self.client = TInvestClient(
-            settings.tinvest_token, settings.tinvest_account_id, depth=settings.orderbook_depth
+            settings.tinvest_token,
+            settings.tinvest_account_id,
+            depth=settings.orderbook_depth,
+            ws_url=settings.tinvest_ws_url,
+            ws_protocol=settings.tinvest_ws_protocol,
         )
         self.session_factory = async_session_factory()
         self.instruments: list[Instrument] = []

@@ -31,7 +31,13 @@ class OrderbookOrchestrator:
             max_points=self.settings.ask_window_history_size,
             flush_interval_seconds=self.settings.ask_window_flush_seconds,
         )
-        self.client = TInvestClient(settings.tinvest_token, settings.tinvest_account_id, depth=settings.orderbook_depth)
+        self.client = TInvestClient(
+            settings.tinvest_token,
+            settings.tinvest_account_id,
+            depth=settings.orderbook_depth,
+            ws_url=settings.tinvest_ws_url,
+            ws_protocol=settings.tinvest_ws_protocol,
+        )
         self._start_time = datetime.utcnow()
         self._last_metrics_log = datetime.utcnow()
         self._updates_count = 0

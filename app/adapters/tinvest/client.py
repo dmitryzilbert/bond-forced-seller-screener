@@ -22,9 +22,18 @@ class TInvestClient:
         rest_transport=None,
         stream_connector=None,
         dry_run: bool = False,
+        ws_url: str | None = None,
+        ws_protocol: str | None = None,
     ):
         self.rest = TInvestRestClient(token, transport=rest_transport)
-        self.stream = TInvestStream(token, depth=depth, connector=stream_connector, dry_run=dry_run)
+        self.stream = TInvestStream(
+            token,
+            depth=depth,
+            connector=stream_connector,
+            dry_run=dry_run,
+            ws_url=ws_url,
+            ws_protocol=ws_protocol,
+        )
         self.account_id = account_id
 
     async def list_bonds(self) -> list[Instrument]:
