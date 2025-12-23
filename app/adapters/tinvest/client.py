@@ -5,11 +5,18 @@ from datetime import datetime
 from typing import Iterable
 
 from .rest import TInvestRestClient
-from .stream import TInvestStream
 from .mapping import map_instrument_payload
 from ...domain.models import Instrument, OrderBookSnapshot
 
 logger = logging.getLogger(__name__)
+
+
+class _DisabledStream:
+    enabled = False
+
+    async def subscribe(self, instruments: Iterable[Instrument]):  # pragma: no cover - trivial guard
+        if False:
+            yield instruments
 
 
 class TInvestClient:
@@ -20,21 +27,16 @@ class TInvestClient:
         depth: int = 10,
         *,
         rest_transport=None,
-        stream_connector=None,
         dry_run: bool = False,
-        stream_transport: str = "grpc",
         app_env: str = "prod",
         grpc_target_prod: str | None = None,
         grpc_target_sandbox: str | None = None,
-        ws_url: str | None = None,
-        ws_protocol: str | None = None,
         ssl_ca_bundle: str | None = None,
-        ssl_insecure: bool = False,
     ):
         self.rest = TInvestRestClient(token, transport=rest_transport)
-        if stream_transport == "grpc":
-            if grpc_target_prod is None or grpc_target_sandbox is None:
-                raise ValueError("gRPC target configuration is required for grpc transport")
+        if grpc_target_prod is None or grpc_target_sandbox is None:
+            raise ValueError("gRPC target configuration is required for grpc transport")
+        if token:
             from .grpc_stream import TInvestGrpcStream
 
             self.stream = TInvestGrpcStream(
@@ -47,16 +49,7 @@ class TInvestClient:
                 dry_run=dry_run,
             )
         else:
-            self.stream = TInvestStream(
-                token,
-                depth=depth,
-                connector=stream_connector,
-                dry_run=dry_run,
-                ws_url=ws_url,
-                ws_protocol=ws_protocol,
-                ssl_ca_bundle=ssl_ca_bundle,
-                ssl_insecure=ssl_insecure,
-            )
+            self.stream = _DisabledStream()
         self.account_id = account_id
 
     async def list_bonds(self) -> list[Instrument]:

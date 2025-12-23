@@ -1,15 +1,18 @@
 import asyncio
-import json
+from datetime import datetime
+from types import SimpleNamespace
 
 import httpx
 import pytest
+
+pytest.importorskip("grpc")
 
 from app.adapters.tinvest.client import TInvestClient
 from app.domain.models import Instrument
 
 
 @pytest.mark.integration
-def test_tinvest_rest_and_stream_dry_run():
+def test_tinvest_rest_and_stream_dry_run(monkeypatch):
     async def _run():
         async def handler(request: httpx.Request) -> httpx.Response:
             if request.url.path.endswith("Bonds"):
@@ -40,51 +43,56 @@ def test_tinvest_rest_and_stream_dry_run():
 
         transport = httpx.MockTransport(handler)
 
-        messages = [
-            json.dumps(
-                {
-                    "orderbook": {
-                        "figi": "figi-test",
-                        "time": "2024-01-01T12:00:00Z",
-                        "bids": [{"price": {"units": 1000, "nano": 0}, "quantity": 2}],
-                        "asks": [],
-                    }
-                }
-            )
-        ]
-
-        class DummyWS:
-            def __init__(self, queue):
-                self._queue = queue
-
-            async def __aenter__(self):
-                return self
-
-            async def __aexit__(self, exc_type, exc, tb):
-                return False
-
-            def __aiter__(self):
-                return self
-
-            async def __anext__(self):
-                if not self._queue:
-                    raise StopAsyncIteration
-                return self._queue.pop(0)
-
-            async def send(self, message):
+        class DummyChannel:
+            async def close(self):
                 return None
 
-        def connector(*args, **kwargs):
-            return DummyWS(messages.copy())
+        def fake_secure_channel(target, credentials):
+            return DummyChannel()
+
+        class DummyStub:
+            def __init__(self, channel):
+                self.channel = channel
+
+            def MarketDataStream(self, request_iterator, metadata=None):
+                async def generator():
+                    await request_iterator.__anext__()
+                    yield SimpleNamespace(
+                        orderbook=SimpleNamespace(
+                            figi="figi-test",
+                            instrument_uid="",
+                            instrument_id="",
+                            time=datetime.utcnow(),
+                            bids=[
+                                SimpleNamespace(
+                                    price=SimpleNamespace(units=1000, nano=0),
+                                    quantity=2,
+                                )
+                            ],
+                            asks=[],
+                        )
+                    )
+
+                return generator()
+
+        monkeypatch.setattr(
+            "app.adapters.tinvest.grpc_stream.grpc.aio.secure_channel",
+            fake_secure_channel,
+        )
+        monkeypatch.setattr(
+            "app.adapters.tinvest.grpc_stream.marketdata_pb2_grpc.MarketDataStreamServiceStub",
+            DummyStub,
+        )
 
         client = TInvestClient(
             "token",
             account_id=None,
             depth=5,
             rest_transport=transport,
-            stream_connector=connector,
             dry_run=True,
-            stream_transport="ws",
+            app_env="prod",
+            grpc_target_prod="prod.example:443",
+            grpc_target_sandbox="sandbox.example:443",
         )
 
         instruments = await client.list_bonds()

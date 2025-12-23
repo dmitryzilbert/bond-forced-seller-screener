@@ -41,14 +41,10 @@ class UniverseService:
             settings.tinvest_token,
             settings.tinvest_account_id,
             depth=settings.orderbook_depth,
-            stream_transport=settings.tinvest_stream_transport,
             app_env=settings.app_env,
             grpc_target_prod=settings.tinvest_grpc_target_prod,
             grpc_target_sandbox=settings.tinvest_grpc_target_sandbox,
-            ws_url=settings.tinvest_ws_url,
-            ws_protocol=settings.tinvest_ws_protocol,
             ssl_ca_bundle=settings.tinvest_ssl_ca_bundle,
-            ssl_insecure=settings.tinvest_ssl_insecure,
         )
         self.session_factory = async_session_factory()
         self.instruments: list[Instrument] = []
