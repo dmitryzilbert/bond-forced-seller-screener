@@ -38,7 +38,7 @@ def build_ssl_context(settings: _SslSettings) -> tuple[ssl.SSLContext, str]:
 
 
 class TInvestStream:
-    DEFAULT_WS_URL = "wss://invest-public-api.tbank.ru/ws/"
+    DEFAULT_WS_URL = "wss://invest-public-api.tbank.ru/ws"
     DEFAULT_SUBPROTOCOL = "json-proto"
 
     def __init__(
@@ -76,6 +76,12 @@ class TInvestStream:
             tinvest_ssl_insecure=ssl_insecure,
         )
 
+    @staticmethod
+    def _normalize_ws_url(ws_url: str) -> str:
+        if ws_url.endswith("/ws/"):
+            return ws_url[:-1]
+        return ws_url
+
     def _build_connect_kwargs(self, headers: dict[str, str]) -> dict[str, dict[str, str]]:
         params = inspect.signature(self.connector).parameters
         if "additional_headers" in params:
@@ -99,11 +105,14 @@ class TInvestStream:
         headers = {"Authorization": f"Bearer {self.token}"}
         subprotocols = [self.subprotocol]
         ssl_ctx, ssl_mode = build_ssl_context(self._ssl_settings)
+        ws_url = self._normalize_ws_url(self.ws_url)
+        if ws_url != self.ws_url:
+            logger.info("Normalized TInvest stream URL: %s -> %s", self.ws_url, ws_url)
         if websockets is not None and self.connector is websockets.connect:
             version = getattr(websockets, "__version__", "unknown")
             logger.info(
                 "Starting TInvest stream: url=%s subprotocol=%s token_set=%s websockets=%s ssl_mode=%s",
-                self.ws_url,
+                ws_url,
                 self.subprotocol,
                 bool(self.token),
                 version,
@@ -112,7 +121,7 @@ class TInvestStream:
         else:
             logger.info(
                 "Starting TInvest stream: url=%s subprotocol=%s token_set=%s ssl_mode=%s",
-                self.ws_url,
+                ws_url,
                 self.subprotocol,
                 bool(self.token),
                 ssl_mode,
@@ -126,7 +135,7 @@ class TInvestStream:
                     break
                 connect_kwargs = self._build_connect_kwargs(headers)
                 async with self.connector(
-                    self.ws_url,
+                    ws_url,
                     subprotocols=subprotocols,
                     ping_interval=20,
                     ping_timeout=20,

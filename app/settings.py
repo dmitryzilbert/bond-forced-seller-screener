@@ -15,7 +15,7 @@ class Settings(BaseSettings):
 
     tinvest_token: str | None = Field(None, alias="TINVEST_TOKEN")
     tinvest_account_id: str | None = Field(None, alias="TINVEST_ACCOUNT_ID")
-    tinvest_ws_url: str = Field("wss://invest-public-api.tbank.ru/ws/", alias="TINVEST_WS_URL")
+    tinvest_ws_url: str = Field("wss://invest-public-api.tbank.ru/ws", alias="TINVEST_WS_URL")
     tinvest_ws_protocol: str = Field("json-proto", alias="TINVEST_WS_PROTOCOL")
     tinvest_ssl_ca_bundle: str | None = Field(None, alias="TINVEST_SSL_CA_BUNDLE")
     tinvest_ssl_insecure: bool = Field(False, alias="TINVEST_SSL_INSECURE")
