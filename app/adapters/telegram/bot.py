@@ -70,8 +70,19 @@ class TelegramBot:
 
         if not self.enabled:
             logger.info("[MOCK TG] %s", message)
-        else:
-            await self.bot.send_message(chat_id=self.settings.telegram_chat_id, text=message, parse_mode="Markdown")
+            self._instrument_last_sent[instrument.isin] = asyncio.get_event_loop().time()
+            self.metrics.record_tg_sent()
+            return
+
+        try:
+            await self.bot.send_message(
+                chat_id=self.settings.telegram_chat_id,
+                text=message,
+                parse_mode="Markdown",
+            )
+        except Exception as exc:
+            logger.warning("Telegram send_message failed for %s: %s", instrument.isin, exc)
+            return
 
         self._instrument_last_sent[instrument.isin] = asyncio.get_event_loop().time()
         self.metrics.record_tg_sent()
@@ -80,8 +91,19 @@ class TelegramBot:
         await self._wait_global_rate_limit()
         if not self.enabled:
             logger.info("[MOCK TG] %s", message)
-        else:
-            await self.bot.send_message(chat_id=self.settings.telegram_chat_id, text=message, parse_mode="Markdown")
+            self.metrics.record_tg_sent()
+            return
+
+        try:
+            await self.bot.send_message(
+                chat_id=self.settings.telegram_chat_id,
+                text=message,
+                parse_mode="Markdown",
+            )
+        except Exception as exc:
+            logger.warning("Telegram send_text failed: %s", exc)
+            return
+
         self.metrics.record_tg_sent()
 
     async def close(self):

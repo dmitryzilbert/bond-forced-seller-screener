@@ -15,7 +15,7 @@ from .services.events import EventService
 from .adapters.telegram.bot import TelegramBot
 from .web.api import api_router
 from .web.views import view_router
-from .storage.db import init_db
+from .storage.db import init_db, close_db
 from .storage.db import async_session_factory
 from .services.metrics import get_metrics
 
@@ -45,6 +45,10 @@ async def lifespan(app: FastAPI):
             worker_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await worker_task
+        with contextlib.suppress(Exception):
+            await telegram.close()
+        with contextlib.suppress(Exception):
+            await close_db()
 
 
 def create_app() -> FastAPI:

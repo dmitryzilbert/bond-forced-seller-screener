@@ -30,8 +30,12 @@ def select_grpc_target(settings: _GrpcSettings) -> str:
 
 def build_grpc_credentials(settings: _GrpcSettings) -> tuple[grpc.ChannelCredentials, str]:
     if settings.tinvest_ssl_ca_bundle:
-        pem_bytes = Path(settings.tinvest_ssl_ca_bundle).read_bytes()
-        return grpc.ssl_channel_credentials(root_certificates=pem_bytes), "custom_bundle"
+        try:
+            pem_bytes = Path(settings.tinvest_ssl_ca_bundle).read_bytes()
+        except OSError as exc:
+            logger.warning("Failed to read SSL CA bundle %s: %s", settings.tinvest_ssl_ca_bundle, exc)
+        else:
+            return grpc.ssl_channel_credentials(root_certificates=pem_bytes), "custom_bundle"
     return grpc.ssl_channel_credentials(), "default"
 
 
