@@ -15,6 +15,8 @@ class Settings(BaseSettings):
 
     tinvest_token: str | None = Field(None, alias="TINVEST_TOKEN")
     tinvest_account_id: str | None = Field(None, alias="TINVEST_ACCOUNT_ID")
+    tinvest_ws_url: str = Field("wss://invest-public-api.tbank.ru/ws/", alias="TINVEST_WS_URL")
+    tinvest_ws_protocol: str = Field("json-proto", alias="TINVEST_WS_PROTOCOL")
 
     orderbook_depth: int = Field(10, alias="ORDERBOOK_DEPTH")
     shortlist_max: int = Field(500, alias="SHORTLIST_MAX")

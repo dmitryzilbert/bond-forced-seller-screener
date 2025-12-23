@@ -10,8 +10,10 @@ from typing import Iterable, Callable, Awaitable
 
 try:  # Optional dependency for environments without network
     import websockets
+    from websockets.exceptions import InvalidHandshake, InvalidStatusCode
 except ImportError:  # pragma: no cover - handled in __init__
     websockets = None
+    InvalidHandshake = InvalidStatusCode = None
 
 from ...domain.models import Instrument, OrderBookLevel, OrderBookSnapshot
 
@@ -19,9 +21,20 @@ logger = logging.getLogger(__name__)
 
 
 class TInvestStream:
-    WS_URL = "wss://invest-public-api.tinkoff.ru/ws/invest-public-api-v1/marketdata/stream"
+    DEFAULT_WS_URL = "wss://invest-public-api.tbank.ru/ws/"
+    DEFAULT_SUBPROTOCOL = "json-proto"
 
-    def __init__(self, token: str | None, depth: int = 10, *, connector: Callable[..., Awaitable] | None = None, dry_run: bool = False, max_reconnect_attempts: int = 20):
+    def __init__(
+        self,
+        token: str | None,
+        depth: int = 10,
+        *,
+        connector: Callable[..., Awaitable] | None = None,
+        dry_run: bool = False,
+        max_reconnect_attempts: int = 20,
+        ws_url: str | None = None,
+        ws_protocol: str | None = None,
+    ):
         self.token = token
         self.depth = depth
         self.enabled = bool(token)
@@ -37,6 +50,8 @@ class TInvestStream:
         self.reconnect_count = 0
         self._last_active_instruments: list[Instrument] = []
         self.max_reconnect_attempts = max_reconnect_attempts
+        self.ws_url = ws_url or self.DEFAULT_WS_URL
+        self.subprotocol = ws_protocol or self.DEFAULT_SUBPROTOCOL
 
     def _build_connect_kwargs(self, headers: dict[str, str]) -> dict[str, dict[str, str]]:
         params = inspect.signature(self.connector).parameters
@@ -59,11 +74,25 @@ class TInvestStream:
         overload_level = 0
 
         headers = {"Authorization": f"Bearer {self.token}"}
-        subprotocols = ["json"]
+        subprotocols = [self.subprotocol]
         if websockets is not None and self.connector is websockets.connect:
             version = getattr(websockets, "__version__", "unknown")
-            logger.info("Starting TInvest stream: websockets version = %s", version)
+            logger.info(
+                "Starting TInvest stream: url=%s subprotocol=%s token_set=%s websockets=%s",
+                self.ws_url,
+                self.subprotocol,
+                bool(self.token),
+                version,
+            )
+        else:
+            logger.info(
+                "Starting TInvest stream: url=%s subprotocol=%s token_set=%s",
+                self.ws_url,
+                self.subprotocol,
+                bool(self.token),
+            )
         while True:
+            ws = None
             try:
                 current_instruments = self._select_instruments(base_instruments, overload_level)
                 if not current_instruments:
@@ -71,12 +100,17 @@ class TInvestStream:
                     break
                 connect_kwargs = self._build_connect_kwargs(headers)
                 async with self.connector(
-                    self.WS_URL,
+                    self.ws_url,
                     subprotocols=subprotocols,
                     ping_interval=20,
                     ping_timeout=20,
                     **connect_kwargs,
                 ) as ws:
+                    server_subprotocol = getattr(ws, "subprotocol", None)
+                    if server_subprotocol is None:
+                        logger.warning("TInvest stream: server did not agree on subprotocol; reconnecting")
+                        raise ConnectionError("Server did not agree on subprotocol")
+                    logger.info("TInvest stream connected: server_subprotocol=%s", server_subprotocol)
                     await self._send_subscribe_batches(ws, current_instruments)
                     self._last_active_instruments = current_instruments
                     backoff = 1
@@ -87,10 +121,30 @@ class TInvestStream:
                             yield snapshot
                     if self.dry_run:
                         break
+            except (InvalidStatusCode, InvalidHandshake) as exc:  # pragma: no cover - network errors are expected in prod
+                status = getattr(exc, "status_code", None) or getattr(exc, "status", None)
+                logger.warning("TInvest stream handshake failed: status=%s error=%s", status, exc)
+                self.reconnect_count += 1
+                if self.dry_run:
+                    break
+                if self.reconnect_count >= self.max_reconnect_attempts:
+                    logger.error("TInvest stream reached max reconnect attempts (%s)", self.max_reconnect_attempts)
+                    break
+                overload_level = min(overload_level + 1, 3)
+                sleep_for = min(backoff, max_backoff) + random.uniform(0, backoff)
+                await asyncio.sleep(sleep_for)
+                backoff = min(backoff * 2, max_backoff)
             except asyncio.CancelledError:
                 raise
             except Exception as exc:  # pragma: no cover - network errors are expected in prod
-                logger.warning("TInvest stream disconnected: %s", exc)
+                close_code = getattr(ws, "close_code", None)
+                close_reason = getattr(ws, "close_reason", None)
+                logger.warning(
+                    "TInvest stream disconnected: %s code=%s reason=%s",
+                    exc,
+                    close_code,
+                    close_reason,
+                )
                 self.reconnect_count += 1
                 if self.dry_run:
                     break
