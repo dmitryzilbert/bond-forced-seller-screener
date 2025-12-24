@@ -271,6 +271,8 @@ class UniverseService:
             reasons.append("missing_isin")
         if not instrument.figi:
             reasons.append("missing_figi")
+        if instrument.has_call_offer is None:
+            reasons.append("missing_call_offer")
         if instrument.maturity_date is None:
             reasons.append("missing_maturity_date")
         return reasons
