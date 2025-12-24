@@ -1,5 +1,7 @@
 import warnings
 
+from typer.testing import CliRunner
+
 from app.cli import main as cli_main
 
 
@@ -28,3 +30,15 @@ def test_shortlist_rebuild_no_runtime_warning(monkeypatch):
 
     assert result is None
     assert not any(issubclass(w.category, RuntimeWarning) for w in caught)
+
+
+def test_cli_help_registers_subcommands():
+    runner = CliRunner()
+
+    result = runner.invoke(cli_main.app, ["telegram", "--help"])
+    assert result.exit_code == 0
+    assert "test-alert" in result.output
+
+    result = runner.invoke(cli_main.app, ["tinvest", "--help"])
+    assert result.exit_code == 0
+    assert "grpc-check" in result.output
