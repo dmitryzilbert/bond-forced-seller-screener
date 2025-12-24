@@ -1,3 +1,5 @@
+import subprocess
+import sys
 import warnings
 
 from typer.testing import CliRunner
@@ -42,3 +44,17 @@ def test_cli_help_registers_subcommands():
     result = runner.invoke(cli_main.app, ["tinvest", "--help"])
     assert result.exit_code == 0
     assert "grpc-check" in result.output
+
+
+def test_cli_help_includes_commands():
+    result = subprocess.run(
+        [sys.executable, "-m", "app.cli.main", "--help"],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0
+    output = result.stdout
+    assert "run" in output
+    assert "shortlist:rebuild" in output

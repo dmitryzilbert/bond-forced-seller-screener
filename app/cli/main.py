@@ -2,23 +2,12 @@ from __future__ import annotations
 
 import asyncio
 from datetime import datetime
+import importlib
 import json
 from pathlib import Path
-import typer
-from sqlalchemy import select, func
+from typing import Callable, TypeVar
 
-from ..domain.models import Event, Instrument
-from ..domain.detector import History, detect_event
-from ..adapters.tinvest.mapping import map_orderbook_payload
-from ..services.universe import UniverseService
-from ..services.replay import ReplayService
-from ..services.events import EventService
-from ..adapters.telegram.bot import TelegramBot
-from ..settings import get_settings
-from ..storage.repo import SnapshotRepository, EventRepository
-from ..storage.db import async_session_factory
-from ..storage.schema import InstrumentORM
-from ..services.metrics import get_metrics
+import typer
 
 app = typer.Typer(help="Bond forced seller screener")
 tinvest_app = typer.Typer(help="T-Invest tools")
@@ -26,18 +15,55 @@ telegram_app = typer.Typer(help="Telegram tools")
 app.add_typer(tinvest_app, name="tinvest")
 app.add_typer(telegram_app, name="telegram")
 
+UniverseService = None
+get_settings = None
+
+T = TypeVar("T")
+
+
+def _load_symbol(name: str, module_path: str, attr: str):
+    override = globals().get(name)
+    if override is not None:
+        return override
+    module = importlib.import_module(module_path)
+    return getattr(module, attr)
+
+
+def _load_dependencies(command_name: str, loader: Callable[[], T]) -> T:
+    try:
+        return loader()
+    except Exception as exc:
+        typer.secho(
+            f"Failed to import dependencies for '{command_name}'. Original error: {exc}",
+            fg=typer.colors.RED,
+            err=True,
+        )
+        raise typer.Exit(code=1) from exc
+
 
 @app.command()
 def run():
     """Запустить web + worker"""
-    import uvicorn
-
+    uvicorn = _load_dependencies(
+        "run",
+        lambda: importlib.import_module("uvicorn"),
+    )
     uvicorn.run("app.main:app", host="0.0.0.0", port=8000, reload=False)
 
 
 async def _shortlist_rebuild():
-    settings = get_settings()
-    universe = UniverseService(settings)
+    def load_shortlist_deps():
+        return (
+            _load_symbol("UniverseService", "app.services.universe", "UniverseService"),
+            _load_symbol("get_settings", "app.settings", "get_settings"),
+        )
+
+    UniverseServiceLocal, get_settings_local = _load_dependencies(
+        "shortlist:rebuild",
+        load_shortlist_deps,
+    )
+    settings = get_settings_local()
+    universe = UniverseServiceLocal(settings)
     summary = await universe.rebuild_shortlist()
     typer.echo(
         f"Universe: {summary.universe_size}, eligible: {summary.eligible_size}, shortlisted: {summary.shortlisted_size}"
@@ -76,11 +102,27 @@ async def _backtest_replay(
     volume_cap: float = 1.0,
     exit_on: str = "mid",
 ):
-    settings = get_settings()
-    session = async_session_factory()()
-    event_repo = EventRepository(settings)
-    snapshot_repo = SnapshotRepository(session)
-    replay = ReplayService(snapshot_repo, event_repo)
+    def load_backtest_deps():
+        return (
+            _load_symbol("get_settings", "app.settings", "get_settings"),
+            _load_symbol("EventRepository", "app.storage.repo", "EventRepository"),
+            _load_symbol("SnapshotRepository", "app.storage.repo", "SnapshotRepository"),
+            _load_symbol("async_session_factory", "app.storage.db", "async_session_factory"),
+            _load_symbol("ReplayService", "app.services.replay", "ReplayService"),
+        )
+
+    (
+        get_settings_local,
+        EventRepositoryLocal,
+        SnapshotRepositoryLocal,
+        async_session_factory_local,
+        ReplayServiceLocal,
+    ) = _load_dependencies("backtest:replay", load_backtest_deps)
+    settings = get_settings_local()
+    session = async_session_factory_local()()
+    event_repo = EventRepositoryLocal(settings)
+    snapshot_repo = SnapshotRepositoryLocal(session)
+    replay = ReplayServiceLocal(snapshot_repo, event_repo)
     result = await replay.run(
         minutes=minutes,
         mode=mode,  # type: ignore[arg-type]
@@ -111,12 +153,34 @@ def backtest_replay(
 
 
 async def _detector_replay(input_path: Path, *, send_telegram: bool = False):
-    settings = get_settings()
-    universe = UniverseService(settings)
-    events = EventService(settings)
-    telegram = TelegramBot(settings) if send_telegram else None
-    metrics = get_metrics()
-    history = History(
+    def load_detector_deps():
+        return (
+            _load_symbol("get_settings", "app.settings", "get_settings"),
+            _load_symbol("UniverseService", "app.services.universe", "UniverseService"),
+            _load_symbol("EventService", "app.services.events", "EventService"),
+            _load_symbol("TelegramBot", "app.adapters.telegram.bot", "TelegramBot"),
+            _load_symbol("get_metrics", "app.services.metrics", "get_metrics"),
+            _load_symbol("History", "app.domain.detector", "History"),
+            _load_symbol("detect_event", "app.domain.detector", "detect_event"),
+            _load_symbol("map_orderbook_payload", "app.adapters.tinvest.mapping", "map_orderbook_payload"),
+        )
+
+    (
+        get_settings_local,
+        UniverseServiceLocal,
+        EventServiceLocal,
+        TelegramBotLocal,
+        get_metrics_local,
+        HistoryLocal,
+        detect_event_local,
+        map_orderbook_payload_local,
+    ) = _load_dependencies("detector:replay", load_detector_deps)
+    settings = get_settings_local()
+    universe = UniverseServiceLocal(settings)
+    events = EventServiceLocal(settings)
+    telegram = TelegramBotLocal(settings) if send_telegram else None
+    metrics = get_metrics_local()
+    history = HistoryLocal(
         max_points=settings.ask_window_history_size,
         flush_interval_seconds=settings.ask_window_flush_seconds,
     )
@@ -142,7 +206,7 @@ async def _detector_replay(input_path: Path, *, send_telegram: bool = False):
         if not line.strip():
             continue
         data = json.loads(line)
-        snapshot = map_orderbook_payload(data)
+        snapshot = map_orderbook_payload_local(data)
         if not snapshot or (not snapshot.bids and not snapshot.asks):
             continue
 
@@ -150,7 +214,7 @@ async def _detector_replay(input_path: Path, *, send_telegram: bool = False):
         if not instrument:
             continue
 
-        event = detect_event(
+        event = detect_event_local(
             snapshot,
             instrument,
             history,
@@ -229,9 +293,21 @@ def detector_replay(
 
 @tinvest_app.command("grpc-check")
 def tinvest_grpc_check():
-    settings = get_settings()
-    from ..adapters.tinvest.grpc_stream import build_grpc_credentials, grpc_channel_ready, select_grpc_target
+    def load_tinvest_deps():
+        return (
+            _load_symbol("get_settings", "app.settings", "get_settings"),
+            _load_symbol("build_grpc_credentials", "app.adapters.tinvest.grpc_stream", "build_grpc_credentials"),
+            _load_symbol("grpc_channel_ready", "app.adapters.tinvest.grpc_stream", "grpc_channel_ready"),
+            _load_symbol("select_grpc_target", "app.adapters.tinvest.grpc_stream", "select_grpc_target"),
+        )
 
+    (
+        get_settings_local,
+        build_grpc_credentials,
+        grpc_channel_ready,
+        select_grpc_target,
+    ) = _load_dependencies("tinvest grpc-check", load_tinvest_deps)
+    settings = get_settings_local()
     target = select_grpc_target(settings)
     credentials, ssl_mode = build_grpc_credentials(settings)
     token_set = bool(settings.tinvest_token)
@@ -241,9 +317,17 @@ def tinvest_grpc_check():
 
 
 async def _telegram_test_alert(settings):
-    telegram = TelegramBot(settings)
+    TelegramBotLocal, EventLocal, InstrumentLocal = _load_dependencies(
+        "telegram test-alert",
+        lambda: (
+            _load_symbol("TelegramBot", "app.adapters.telegram.bot", "TelegramBot"),
+            _load_symbol("Event", "app.domain.models", "Event"),
+            _load_symbol("Instrument", "app.domain.models", "Instrument"),
+        ),
+    )
+    telegram = TelegramBotLocal(settings)
     now = asyncio.get_event_loop().time()
-    event = Event(
+    event = EventLocal(
         isin="TEST00000000",
         ts=datetime.utcnow(),
         ytm_mid=0.12,
@@ -255,7 +339,7 @@ async def _telegram_test_alert(settings):
         score=9.5,
         payload={"best_ask": 101.23, "eligible": True},
     )
-    instrument = Instrument(
+    instrument = InstrumentLocal(
         isin="TEST00000000",
         figi="TESTFIGI",
         name="Test Bond",
@@ -274,7 +358,11 @@ async def _telegram_test_alert(settings):
 @telegram_app.command("test-alert")
 def telegram_test_alert():
     """Отправить тестовый алерт в Telegram."""
-    settings = get_settings()
+    get_settings_local = _load_dependencies(
+        "telegram test-alert",
+        lambda: _load_symbol("get_settings", "app.settings", "get_settings"),
+    )
+    settings = get_settings_local()
     if not settings.telegram_bot_token or not settings.telegram_chat_id:
         typer.echo("Telegram is not configured. Set TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID.")
         raise typer.Exit(code=1)
@@ -282,19 +370,37 @@ def telegram_test_alert():
 
 
 async def _diagnose():
-    settings = get_settings()
-    session_factory = async_session_factory()
+    def load_diagnose_deps():
+        return (
+            _load_symbol("get_settings", "app.settings", "get_settings"),
+            _load_symbol("async_session_factory", "app.storage.db", "async_session_factory"),
+            _load_symbol("InstrumentORM", "app.storage.schema", "InstrumentORM"),
+            _load_symbol("get_metrics", "app.services.metrics", "get_metrics"),
+            _load_symbol("select", "sqlalchemy", "select"),
+            _load_symbol("func", "sqlalchemy", "func"),
+        )
+
+    (
+        get_settings_local,
+        async_session_factory_local,
+        InstrumentORMLocal,
+        get_metrics_local,
+        select,
+        func,
+    ) = _load_dependencies("diagnose", load_diagnose_deps)
+    settings = get_settings_local()
+    session_factory = async_session_factory_local()
     async with session_factory() as session:
         instruments_count = (
-            await session.execute(select(func.count(InstrumentORM.isin)))
+            await session.execute(select(func.count(InstrumentORMLocal.isin)))
         ).scalar_one()
         shortlisted_count = (
             await session.execute(
-                select(func.count(InstrumentORM.isin)).where(InstrumentORM.is_shortlisted.is_(True))
+                select(func.count(InstrumentORMLocal.isin)).where(InstrumentORMLocal.is_shortlisted.is_(True))
             )
         ).scalar_one()
 
-    metrics = get_metrics()
+    metrics = get_metrics_local()
     last_update_ts = metrics.last_update_ts.isoformat() if metrics.last_update_ts else None
     last_heartbeat_ts = metrics.last_heartbeat_ts.isoformat() if metrics.last_heartbeat_ts else None
 
