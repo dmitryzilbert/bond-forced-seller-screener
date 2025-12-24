@@ -38,6 +38,8 @@ def universe_factory(monkeypatch, tmp_path):
         monkeypatch.setenv("APP_ENV", "mock")
         for key, value in env.items():
             monkeypatch.setenv(key, str(value))
+        if hasattr(get_settings, "cache_clear"):
+            get_settings.cache_clear()
         db_module._engine = None
         db_module._session_factory = None
         asyncio.run(db_module.init_db())
