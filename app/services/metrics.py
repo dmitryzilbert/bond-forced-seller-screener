@@ -10,10 +10,13 @@ class Metrics:
         self.events_candidate_total = 0
         self.events_alert_total = 0
         self.tg_sent_total = 0
+        self.stream_messages_total = 0
+        self.stream_pings_total = 0
         self.stream_reconnect_total = 0
         self.eligible_instruments_total = 0
         self.shortlisted_instruments_total = 0
         self.last_update_ts: datetime | None = now
+        self.last_heartbeat_ts: datetime | None = now
         self._last_liveness_alert: datetime | None = None
 
     def record_snapshot(self, *, ts: datetime | None = None) -> None:
@@ -28,6 +31,13 @@ class Metrics:
 
     def record_tg_sent(self) -> None:
         self.tg_sent_total += 1
+
+    def record_stream_message(self) -> None:
+        self.stream_messages_total += 1
+
+    def record_stream_ping(self, *, ts: datetime | None = None) -> None:
+        self.stream_pings_total += 1
+        self.last_heartbeat_ts = ts or datetime.now(timezone.utc)
 
     def set_stream_reconnects(self, value: int) -> None:
         self.stream_reconnect_total = value
@@ -55,6 +65,8 @@ class Metrics:
             f"events_candidate_total {self.events_candidate_total}",
             f"events_alert_total {self.events_alert_total}",
             f"tg_sent_total {self.tg_sent_total}",
+            f"stream_messages_total {self.stream_messages_total}",
+            f"stream_pings_total {self.stream_pings_total}",
             f"stream_reconnect_total {self.stream_reconnect_total}",
             f"eligible_instruments_total {self.eligible_instruments_total}",
             f"shortlisted_instruments_total {self.shortlisted_instruments_total}",

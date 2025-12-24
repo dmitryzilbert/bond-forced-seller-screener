@@ -39,6 +39,7 @@ class OrderbookOrchestrator:
             grpc_target_prod=settings.tinvest_grpc_target_prod,
             grpc_target_sandbox=settings.tinvest_grpc_target_sandbox,
             ssl_ca_bundle=settings.tinvest_ssl_ca_bundle,
+            ping_delay_ms=settings.tinvest_ping_delay_ms,
         )
         self._start_time = datetime.utcnow()
         self._last_metrics_log = datetime.utcnow()

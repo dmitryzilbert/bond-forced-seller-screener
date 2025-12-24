@@ -5,12 +5,14 @@ import logging
 import random
 from datetime import datetime, timezone
 from pathlib import Path
+from collections import Counter
 from typing import Iterable, Protocol
 
 import grpc
 from t_tech.invest.grpc import marketdata_pb2, marketdata_pb2_grpc
 
 from ...domain.models import Instrument, OrderBookLevel, OrderBookSnapshot
+from ...services.metrics import get_metrics
 
 logger = logging.getLogger(__name__)
 
@@ -20,6 +22,7 @@ class _GrpcSettings(Protocol):
     tinvest_grpc_target_prod: str
     tinvest_grpc_target_sandbox: str
     tinvest_ssl_ca_bundle: str | None
+    tinvest_ping_delay_ms: int
 
 
 def select_grpc_target(settings: _GrpcSettings) -> str:
@@ -66,6 +69,7 @@ class TInvestGrpcStream:
         target_prod: str,
         target_sandbox: str,
         ssl_ca_bundle: str | None = None,
+        ping_delay_ms: int = 30000,
         dry_run: bool = False,
         batch_size: int = 50,
         batch_sleep_range: tuple[float, float] = (0.1, 0.3),
@@ -78,11 +82,13 @@ class TInvestGrpcStream:
         self.batch_size = max(1, batch_size)
         self.batch_sleep_range = batch_sleep_range
         self._last_active_instruments: list[Instrument] = []
+        self._metrics = get_metrics()
         self._settings = _GrpcRuntimeSettings(
             app_env=app_env,
             tinvest_grpc_target_prod=target_prod,
             tinvest_grpc_target_sandbox=target_sandbox,
             tinvest_ssl_ca_bundle=ssl_ca_bundle,
+            tinvest_ping_delay_ms=ping_delay_ms,
         )
 
     async def subscribe(self, instruments: Iterable[Instrument]):
@@ -118,6 +124,7 @@ class TInvestGrpcStream:
                 self._last_active_instruments = current_instruments
                 backoff_index = 0
                 async for response in responses:
+                    self._handle_stream_response(response)
                     snapshot = self._parse_response(response, instrument_map)
                     if snapshot:
                         yield snapshot
@@ -138,6 +145,10 @@ class TInvestGrpcStream:
                 await channel.close()
 
     async def _request_iterator(self, instruments: list[Instrument]):
+        ping_delay_ms = max(int(self._settings.tinvest_ping_delay_ms), 1000)
+        yield marketdata_pb2.MarketDataRequest(
+            ping_settings=marketdata_pb2.PingSettings(ping_delay_ms=ping_delay_ms)
+        )
         for batch in self._chunked(instruments, self.batch_size):
             request = marketdata_pb2.MarketDataRequest(
                 subscribe_order_book_request=marketdata_pb2.SubscribeOrderBookRequest(
@@ -248,6 +259,57 @@ class TInvestGrpcStream:
         nano = int(getattr(value, "nano", 0))
         return units + nano / 1e9
 
+    def _handle_stream_response(self, response: marketdata_pb2.MarketDataResponse) -> None:
+        if response is None:
+            return
+        self._metrics.record_stream_message()
+        if hasattr(response, "HasField") and response.HasField("ping"):
+            ping = getattr(response, "ping", None)
+            ping_ts = self._parse_timestamp(getattr(ping, "time", None)) if ping else None
+            self._metrics.record_stream_ping(ts=ping_ts)
+            return
+
+        if hasattr(response, "HasField") and response.HasField("subscribe_order_book_response"):
+            self._log_subscription_response(response.subscribe_order_book_response)
+
+    def _log_subscription_response(self, response) -> None:
+        subscriptions = (
+            getattr(response, "order_book_subscriptions", None)
+            or getattr(response, "order_books_subscriptions", None)
+            or []
+        )
+        if not subscriptions:
+            return
+
+        ok_count = 0
+        error_count = 0
+        status_counts: Counter[str] = Counter()
+        error_reasons: Counter[str] = Counter()
+        for item in subscriptions:
+            status_raw = getattr(item, "subscription_status", None) or getattr(item, "status", None)
+            status_name = getattr(status_raw, "name", None) or str(status_raw)
+            if status_name:
+                status_counts[status_name] += 1
+                status_upper = status_name.upper()
+                if "ERROR" in status_upper:
+                    error_count += 1
+                elif "SUCCESS" in status_upper or "OK" in status_upper or "SUBSCRIBED" in status_upper:
+                    ok_count += 1
+            error_raw = getattr(item, "error", None)
+            error_str = getattr(error_raw, "description", None) or getattr(error_raw, "message", None)
+            if error_str:
+                error_reasons[str(error_str)] += 1
+
+        top_errors = ", ".join(
+            f"{reason}={count}" for reason, count in error_reasons.most_common(3)
+        )
+        logger.info(
+            "Orderbook subscriptions response: %s OK, %s ERROR%s",
+            ok_count,
+            error_count,
+            f" | top_errors: {top_errors}" if top_errors else "",
+        )
+
 
 class _GrpcRuntimeSettings:
     def __init__(
@@ -257,8 +319,10 @@ class _GrpcRuntimeSettings:
         tinvest_grpc_target_prod: str,
         tinvest_grpc_target_sandbox: str,
         tinvest_ssl_ca_bundle: str | None,
+        tinvest_ping_delay_ms: int,
     ) -> None:
         self.app_env = app_env
         self.tinvest_grpc_target_prod = tinvest_grpc_target_prod
         self.tinvest_grpc_target_sandbox = tinvest_grpc_target_sandbox
         self.tinvest_ssl_ca_bundle = tinvest_ssl_ca_bundle
+        self.tinvest_ping_delay_ms = tinvest_ping_delay_ms

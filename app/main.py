@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.responses import PlainTextResponse, JSONResponse
-from sqlalchemy import select
+from sqlalchemy import select, func
 
 from .logging import setup_logging
 from .settings import get_settings
@@ -15,8 +15,8 @@ from .services.events import EventService
 from .adapters.telegram.bot import TelegramBot
 from .web.api import api_router
 from .web.views import view_router
-from .storage.db import init_db, close_db
-from .storage.db import async_session_factory
+from .storage.db import init_db, close_db, async_session_factory
+from .storage.schema import InstrumentORM
 from .services.metrics import get_metrics
 
 setup_logging()
@@ -27,6 +27,24 @@ settings = get_settings()
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await init_db()
+    metrics = get_metrics()
+    try:
+        session_factory = async_session_factory()
+        async with session_factory() as session:
+            eligible_count = await session.scalar(
+                select(func.count()).select_from(InstrumentORM).where(InstrumentORM.eligible.is_(True))
+            )
+            shortlisted_count = await session.scalar(
+                select(func.count())
+                .select_from(InstrumentORM)
+                .where(InstrumentORM.is_shortlisted.is_(True))
+            )
+        metrics.set_instrument_totals(
+            eligible=int(eligible_count or 0),
+            shortlisted=int(shortlisted_count or 0),
+        )
+    except Exception:
+        logger.exception("Failed to load instrument counts from DB")
     universe = UniverseService(settings)
     event_service = EventService(settings)
     telegram = TelegramBot(settings)
@@ -68,13 +86,13 @@ def create_app() -> FastAPI:
             db_ok = False
 
         metrics = get_metrics()
-        last_update = metrics.last_update_ts
-        if last_update and last_update.tzinfo is None:
-            last_update = last_update.replace(tzinfo=timezone.utc)
+        last_heartbeat = metrics.last_heartbeat_ts
+        if last_heartbeat and last_heartbeat.tzinfo is None:
+            last_heartbeat = last_heartbeat.replace(tzinfo=timezone.utc)
         now = datetime.now(timezone.utc)
         stale = (
-            last_update is None
-            or (now - last_update).total_seconds() > settings.liveness_max_stale_seconds
+            last_heartbeat is None
+            or (now - last_heartbeat).total_seconds() > settings.liveness_max_stale_seconds
         )
 
         ok = db_ok and not stale
@@ -83,8 +101,8 @@ def create_app() -> FastAPI:
             content={
                 "status": "ok" if ok else "fail",
                 "db_ok": db_ok,
-                "last_update_ts": last_update.isoformat() if last_update else None,
-                "stale_seconds": (now - last_update).total_seconds() if last_update else None,
+                "last_heartbeat_ts": last_heartbeat.isoformat() if last_heartbeat else None,
+                "stale_seconds": (now - last_heartbeat).total_seconds() if last_heartbeat else None,
             },
             status_code=status_code,
         )
