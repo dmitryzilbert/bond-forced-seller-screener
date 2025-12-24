@@ -15,6 +15,9 @@ class Metrics:
         self.stream_reconnect_total = 0
         self.eligible_instruments_total = 0
         self.shortlisted_instruments_total = 0
+        self.orderbook_subscriptions_ok_total = 0
+        self.orderbook_subscriptions_limit_exceeded_total = 0
+        self.orderbook_subscriptions_error_total: dict[str, int] = {}
         self.last_update_ts: datetime | None = now
         self.last_heartbeat_ts: datetime | None = now
         self._last_liveness_alert: datetime | None = None
@@ -47,6 +50,22 @@ class Metrics:
         self.eligible_instruments_total = eligible
         self.shortlisted_instruments_total = shortlisted
 
+    def record_orderbook_subscriptions(
+        self,
+        *,
+        ok_total: int,
+        error_counts: dict[str, int],
+        limit_exceeded_total: int,
+    ) -> None:
+        self.orderbook_subscriptions_ok_total += max(ok_total, 0)
+        self.orderbook_subscriptions_limit_exceeded_total += max(limit_exceeded_total, 0)
+        for status_name, count in error_counts.items():
+            if count <= 0:
+                continue
+            self.orderbook_subscriptions_error_total[status_name] = (
+                self.orderbook_subscriptions_error_total.get(status_name, 0) + count
+            )
+
     def should_send_liveness_alert(self, *, now: datetime, cooldown_minutes: int, threshold_minutes: int) -> bool:
         if self.last_update_ts is None:
             return False
@@ -71,7 +90,16 @@ class Metrics:
             f"stream_reconnect_total {self.stream_reconnect_total}",
             f"eligible_instruments_total {self.eligible_instruments_total}",
             f"shortlisted_instruments_total {self.shortlisted_instruments_total}",
+            f"orderbook_subscriptions_ok_total {self.orderbook_subscriptions_ok_total}",
+            (
+                "orderbook_subscriptions_limit_exceeded_total "
+                f"{self.orderbook_subscriptions_limit_exceeded_total}"
+            ),
         ]
+        for status_name, count in sorted(self.orderbook_subscriptions_error_total.items()):
+            lines.append(
+                f'orderbook_subscriptions_error_total{{status_name="{status_name}"}} {count}'
+            )
         return "\n".join(lines) + "\n"
 
 

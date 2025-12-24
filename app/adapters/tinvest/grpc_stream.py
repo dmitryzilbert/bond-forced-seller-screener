@@ -163,6 +163,7 @@ class TInvestGrpcStream:
                         if self._response_has_subscribe_response(response) and not ack_validated:
                             ack = response.subscribe_order_book_response
                             ok_subs, err_subs = self._split_subscription_response(ack)
+                            self._record_subscription_metrics(ok_subs, err_subs)
                             if len(ok_subs) == 0:
                                 raise RuntimeError("Orderbook subscription rejected")
                             ok_instruments = self._select_instruments_from_subscriptions(
@@ -172,11 +173,24 @@ class TInvestGrpcStream:
                                 instrument_map = self._build_instrument_map(ok_instruments)
                                 self._last_active_instruments = ok_instruments
                             if err_subs:
-                                err_ids = self._subscription_instrument_ids(err_subs)
-                                logger.info(
-                                    "Orderbook subscription errors for instruments: %s",
-                                    ", ".join(sorted(err_ids)),
-                                )
+                                tracking_id = getattr(ack, "tracking_id", None)
+                                for item in err_subs:
+                                    status_raw = getattr(item, "subscription_status", None) or getattr(
+                                        item, "status", None
+                                    )
+                                    status_name = self._subscription_status_name(status_raw)
+                                    instrument_id = getattr(item, "instrument_id", None)
+                                    figi = getattr(item, "figi", None)
+                                    uid = getattr(item, "instrument_uid", None) or getattr(item, "uid", None)
+                                    logger.warning(
+                                        "Orderbook subscription rejected: tracking_id=%s status=%s "
+                                        "instrument_id=%s figi=%s uid=%s",
+                                        tracking_id,
+                                        status_name,
+                                        instrument_id,
+                                        figi,
+                                        uid,
+                                    )
                             ack_validated = True
                             continue
                         if not ack_validated:
@@ -395,11 +409,7 @@ class TInvestGrpcStream:
         logger.debug("Received empty/unknown stream message: %s", response)
 
     def _log_subscription_response(self, response) -> None:
-        subscriptions = (
-            getattr(response, "order_book_subscriptions", None)
-            or getattr(response, "order_books_subscriptions", None)
-            or []
-        )
+        subscriptions = getattr(response, "order_book_subscriptions", None) or []
         if not subscriptions:
             return
 
@@ -436,7 +446,8 @@ class TInvestGrpcStream:
             figi = getattr(item, "figi", None)
             uid = getattr(item, "instrument_uid", None) or getattr(item, "uid", None)
             logger.warning(
-                "Orderbook subscription error: status=%s instrument_id=%s figi=%s uid=%s",
+                "Orderbook subscription error: tracking_id=%s status=%s instrument_id=%s figi=%s uid=%s",
+                tracking_id,
                 status_name,
                 instrument_id,
                 figi,
@@ -444,11 +455,7 @@ class TInvestGrpcStream:
             )
 
     def _split_subscription_response(self, response) -> tuple[list, list]:
-        subscriptions = (
-            getattr(response, "order_book_subscriptions", None)
-            or getattr(response, "order_books_subscriptions", None)
-            or []
-        )
+        subscriptions = getattr(response, "order_book_subscriptions", None) or []
         if not subscriptions:
             logger.warning("Orderbook subscribe ACK contains no subscriptions")
             return [], []
@@ -466,6 +473,25 @@ class TInvestGrpcStream:
             else:
                 err_subs.append(item)
         return ok_subs, err_subs
+
+    def _record_subscription_metrics(self, ok_subs: list, err_subs: list) -> None:
+        error_counts: dict[str, int] = {}
+        limit_exceeded_total = 0
+        limit_status_value = None
+        enum_type = getattr(self._marketdata_pb2, "SubscriptionStatus", None)
+        if enum_type is not None:
+            limit_status_value = getattr(enum_type, "SUBSCRIPTION_STATUS_LIMIT_EXCEEDED", None)
+        for item in err_subs:
+            status_raw = getattr(item, "subscription_status", None) or getattr(item, "status", None)
+            status_name = self._subscription_status_name(status_raw)
+            error_counts[status_name] = error_counts.get(status_name, 0) + 1
+            if limit_status_value is not None and status_raw == limit_status_value:
+                limit_exceeded_total += 1
+        self._metrics.record_orderbook_subscriptions(
+            ok_total=len(ok_subs),
+            error_counts=error_counts,
+            limit_exceeded_total=limit_exceeded_total,
+        )
 
     def _subscription_status_name(self, status_raw) -> str:
         enum_type = getattr(self._marketdata_pb2, "SubscriptionStatus", None)
