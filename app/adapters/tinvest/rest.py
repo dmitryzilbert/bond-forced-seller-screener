@@ -1,12 +1,15 @@
 from __future__ import annotations
 
+import asyncio
 import logging
-from datetime import datetime
+import random
+from datetime import datetime, timezone
 from typing import Any, Iterable
 
 import httpx
 
 logger = logging.getLogger(__name__)
+_BOND_EVENTS_SEMAPHORE = asyncio.Semaphore(4)
 
 
 class TInvestRestClient:
@@ -53,17 +56,55 @@ class TInvestRestClient:
             )
         return [i for i in instruments if i.get("isin") and i.get("maturity_date")]
 
-    async def get_bond_events(self, instrument_id: str) -> list[dict[str, Any]]:
+    async def get_bond_events(
+        self,
+        instrument_id: str,
+        *,
+        from_dt: datetime | None = None,
+        to_dt: datetime | None = None,
+    ) -> list[dict[str, Any]]:
         if not self.enabled:
             return []
 
         url = "/rest/tinkoff.public.invest.api.contract.v1.InstrumentsService/GetBondEvents"
-        payload = {"instrumentId": instrument_id}
+        payload = {
+            "instrumentId": instrument_id,
+            "type": "EVENT_TYPE_CALL",
+        }
+        if from_dt is not None:
+            payload["from"] = self._format_datetime(from_dt)
+        if to_dt is not None:
+            payload["to"] = self._format_datetime(to_dt)
         logger.info("Fetching bond events for %s", instrument_id)
-        resp = await self._client.post(url, headers=self._headers, json=payload)
-        resp.raise_for_status()
-        data = resp.json()
-        return data.get("events", [])
+
+        max_attempts = 5
+        max_delay = 30.0
+        for attempt in range(max_attempts):
+            async with _BOND_EVENTS_SEMAPHORE:
+                resp = await self._client.post(url, headers=self._headers, json=payload)
+
+            if resp.status_code != httpx.codes.TOO_MANY_REQUESTS:
+                resp.raise_for_status()
+                data = resp.json()
+                return data.get("events", [])
+
+            if attempt == max_attempts - 1:
+                resp.raise_for_status()
+
+            retry_after = self._parse_retry_after(resp.headers.get("Retry-After"))
+            base_delay = min(2**attempt, max_delay)
+            delay = min(base_delay + random.uniform(0, 1), max_delay)
+            if retry_after is not None:
+                delay = max(delay, retry_after)
+            logger.warning(
+                "Received 429 for %s, retrying in %.2fs (attempt %d/%d)",
+                instrument_id,
+                delay,
+                attempt + 1,
+                max_attempts,
+            )
+            await asyncio.sleep(delay)
+        return []
 
     async def last_prices(self, instrument_ids: Iterable[str]) -> dict[str, float]:
         """Fetch last traded prices for provided instrument ids (figi/uid/isin)."""
@@ -91,6 +132,19 @@ class TInvestRestClient:
         if not value:
             return None
         return datetime.fromisoformat(value.replace("Z", "+00:00"))
+
+    def _format_datetime(self, value: datetime) -> str:
+        if value.tzinfo is None:
+            value = value.replace(tzinfo=timezone.utc)
+        return value.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+
+    def _parse_retry_after(self, value: str | None) -> float | None:
+        if not value:
+            return None
+        try:
+            return float(value)
+        except ValueError:
+            return None
 
     def _parse_money_value(self, value: Any) -> float | None:
         if not value:
