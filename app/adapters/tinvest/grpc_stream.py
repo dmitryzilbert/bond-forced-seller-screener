@@ -5,7 +5,6 @@ import logging
 import contextlib
 from datetime import datetime, timezone
 from pathlib import Path
-from collections import Counter
 from typing import Iterable, Protocol
 
 import grpc
@@ -162,10 +161,22 @@ class TInvestGrpcStream:
                             raise response
                         self._handle_stream_response(response)
                         if self._response_has_subscribe_response(response) and not ack_validated:
-                            if not self._validate_subscription_response(
-                                response.subscribe_order_book_response, response
-                            ):
-                                raise ConnectionError("Orderbook subscription rejected")
+                            ack = response.subscribe_order_book_response
+                            ok_subs, err_subs = self._split_subscription_response(ack)
+                            if len(ok_subs) == 0:
+                                raise RuntimeError("Orderbook subscription rejected")
+                            ok_instruments = self._select_instruments_from_subscriptions(
+                                current_instruments, ok_subs
+                            )
+                            if ok_instruments:
+                                instrument_map = self._build_instrument_map(ok_instruments)
+                                self._last_active_instruments = ok_instruments
+                            if err_subs:
+                                err_ids = self._subscription_instrument_ids(err_subs)
+                                logger.info(
+                                    "Orderbook subscription errors for instruments: %s",
+                                    ", ".join(sorted(err_ids)),
+                                )
                             ack_validated = True
                             continue
                         if not ack_validated:
@@ -392,39 +403,47 @@ class TInvestGrpcStream:
         if not subscriptions:
             return
 
-        ok_count = 0
-        error_count = 0
-        status_counts: Counter[str] = Counter()
-        error_reasons: Counter[str] = Counter()
+        ok_subs, err_subs = self._split_subscription_response(response)
+        tracking_id = getattr(response, "tracking_id", None)
         for item in subscriptions:
             status_raw = getattr(item, "subscription_status", None) or getattr(item, "status", None)
-            status_name = getattr(status_raw, "name", None) or str(status_raw)
-            if status_name:
-                status_counts[status_name] += 1
-                status_upper = status_name.upper()
-                if "ERROR" in status_upper:
-                    error_count += 1
-                elif "SUCCESS" in status_upper or "OK" in status_upper or "SUBSCRIBED" in status_upper:
-                    ok_count += 1
-            error_raw = getattr(item, "error", None)
-            error_str = getattr(error_raw, "description", None) or getattr(error_raw, "message", None)
-            if error_str:
-                error_reasons[str(error_str)] += 1
+            status_name = self._subscription_status_name(status_raw)
+            instrument_id = getattr(item, "instrument_id", None)
+            figi = getattr(item, "figi", None)
+            uid = getattr(item, "instrument_uid", None) or getattr(item, "uid", None)
+            logger.info(
+                "Orderbook subscription ACK: tracking_id=%s stream_id=%s subscription_id=%s status=%s "
+                "instrument_id=%s figi=%s uid=%s",
+                tracking_id,
+                getattr(item, "stream_id", None),
+                getattr(item, "subscription_id", None),
+                status_name,
+                instrument_id,
+                figi,
+                uid,
+            )
 
-        top_errors = ", ".join(
-            f"{reason}={count}" for reason, count in error_reasons.most_common(3)
-        )
         logger.info(
-            "Orderbook subscriptions response: %s OK, %s ERROR%s",
-            ok_count,
-            error_count,
-            f" | top_errors: {top_errors}" if top_errors else "",
+            "Orderbook subscriptions response: %d OK, %d ERROR",
+            len(ok_subs),
+            len(err_subs),
         )
 
-    def _validate_subscription_response(self, response, envelope) -> bool:
-        tracking_id = getattr(envelope, "tracking_id", None)
-        stream_id = getattr(envelope, "stream_id", None)
+        for item in err_subs:
+            status_raw = getattr(item, "subscription_status", None) or getattr(item, "status", None)
+            status_name = self._subscription_status_name(status_raw)
+            instrument_id = getattr(item, "instrument_id", None)
+            figi = getattr(item, "figi", None)
+            uid = getattr(item, "instrument_uid", None) or getattr(item, "uid", None)
+            logger.warning(
+                "Orderbook subscription error: status=%s instrument_id=%s figi=%s uid=%s",
+                status_name,
+                instrument_id,
+                figi,
+                uid,
+            )
 
+    def _split_subscription_response(self, response) -> tuple[list, list]:
         subscriptions = (
             getattr(response, "order_book_subscriptions", None)
             or getattr(response, "order_books_subscriptions", None)
@@ -432,37 +451,56 @@ class TInvestGrpcStream:
         )
         if not subscriptions:
             logger.warning("Orderbook subscribe ACK contains no subscriptions")
-            return True
+            return [], []
 
-        errors = []
-        statuses = []
+        success = getattr(self._marketdata_pb2, "SubscriptionStatus", None)
+        success_value = (
+            getattr(success, "SUBSCRIPTION_STATUS_SUCCESS", None) if success else None
+        )
+        ok_subs = []
+        err_subs = []
         for item in subscriptions:
             status_raw = getattr(item, "subscription_status", None) or getattr(item, "status", None)
-            status_name = getattr(status_raw, "name", None) or str(status_raw)
-            if status_name:
-                statuses.append(status_name)
-                status_upper = status_name.upper()
-                if "ERROR" in status_upper:
-                    errors.append(status_name)
-                elif "SUCCESS" in status_upper or "OK" in status_upper or "SUBSCRIBED" in status_upper:
-                    continue
-                else:
-                    errors.append(status_name)
-        if errors:
-            logger.warning(
-                "Orderbook subscribe rejected: tracking_id=%s stream_id=%s statuses=%s",
-                tracking_id,
-                stream_id,
-                errors,
-            )
-            return False
-        logger.info(
-            "Orderbook subscribe ACK: tracking_id=%s stream_id=%s statuses=%s",
-            tracking_id,
-            stream_id,
-            statuses,
-        )
-        return True
+            if success_value is not None and status_raw == success_value:
+                ok_subs.append(item)
+            else:
+                err_subs.append(item)
+        return ok_subs, err_subs
+
+    def _subscription_status_name(self, status_raw) -> str:
+        enum_type = getattr(self._marketdata_pb2, "SubscriptionStatus", None)
+        if enum_type and isinstance(status_raw, int):
+            try:
+                return enum_type.Name(status_raw)
+            except ValueError:
+                pass
+        return getattr(status_raw, "name", None) or str(status_raw)
+
+    def _subscription_instrument_ids(self, subscriptions: Iterable) -> set[str]:
+        ids: set[str] = set()
+        for item in subscriptions:
+            for value in (
+                getattr(item, "instrument_id", None),
+                getattr(item, "figi", None),
+                getattr(item, "instrument_uid", None) or getattr(item, "uid", None),
+            ):
+                if value:
+                    ids.add(str(value))
+        return ids
+
+    def _select_instruments_from_subscriptions(
+        self,
+        instruments: list[Instrument],
+        subscriptions: Iterable,
+    ) -> list[Instrument]:
+        ok_ids = self._subscription_instrument_ids(subscriptions)
+        if not ok_ids:
+            return instruments
+        filtered = [inst for inst in instruments if ok_ids.intersection(self._instrument_keys(inst))]
+        if not filtered:
+            logger.warning("No instruments matched subscription ACK ids: %s", ", ".join(sorted(ok_ids)))
+            return instruments
+        return filtered
 
 
 class _GrpcRuntimeSettings:
