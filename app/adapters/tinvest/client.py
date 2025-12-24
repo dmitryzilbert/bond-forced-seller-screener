@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime
+from datetime import datetime, time, timezone
 from typing import Iterable
 
 from .rest import TInvestRestClient
@@ -67,7 +67,11 @@ class TInvestClient:
         instrument_id = instrument.figi or instrument.isin
         if not instrument_id:
             return None
-        events = await self.rest.get_bond_events(instrument_id)
+        if instrument.maturity_date is None:
+            return None
+        from_dt = datetime.now(timezone.utc)
+        to_dt = datetime.combine(instrument.maturity_date, time.min, tzinfo=timezone.utc)
+        events = await self.rest.get_bond_events(instrument_id, from_dt=from_dt, to_dt=to_dt)
         now = datetime.utcnow().date()
         for event in events:
             event_type = event.get("eventType") or event.get("type") or event.get("event_type")

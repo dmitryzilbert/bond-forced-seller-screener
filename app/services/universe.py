@@ -32,6 +32,7 @@ class ShortlistSummary:
     exclusion_reasons: dict[str, int]
     missing_reasons: dict[str, int] = field(default_factory=dict)
     missing_examples: list[dict] = field(default_factory=list)
+    failed_bond_events: int = 0
 
 
 class UniverseService:
@@ -49,6 +50,7 @@ class UniverseService:
         self.session_factory = async_session_factory()
         self.instruments: list[Instrument] = []
         self._shortlist_flags: dict[str, dict] = {}
+        self.failed_bond_events = 0
 
     async def load_source_instruments(self) -> List[Instrument]:
         if self.settings.app_env == "mock":
@@ -111,6 +113,7 @@ class UniverseService:
             exclusion_reasons=exclusion_reasons,
             missing_reasons=missing_reasons,
             missing_examples=missing_examples,
+            failed_bond_events=self.failed_bond_events,
         )
 
     async def _apply_eligibility(self, instruments: list[Instrument]) -> list[Instrument]:
@@ -314,8 +317,9 @@ class UniverseService:
             return instrument.has_call_offer
         try:
             return await self.client.has_future_call_offer(instrument)
-        except Exception:
-            logger.exception("Failed to fetch bond events for %s", instrument.isin)
+        except Exception as exc:
+            self.failed_bond_events += 1
+            logger.warning("Failed to fetch bond events for %s: %s", instrument.isin, exc)
             return None
 
     def _should_use_cache(self, cached, instrument: Instrument) -> bool:
@@ -323,7 +327,7 @@ class UniverseService:
             return False
         if cached.maturity_date != instrument.maturity_date:
             return False
-        return cached.eligibility_checked_at >= datetime.utcnow() - timedelta(days=1)
+        return cached.eligibility_checked_at >= datetime.utcnow() - timedelta(days=7)
 
     def _with_defaults(self, instrument: Instrument) -> Instrument:
         amortization_flag = instrument.amortization_flag
