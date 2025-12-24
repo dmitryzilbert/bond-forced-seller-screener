@@ -1,12 +1,11 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime
 import typer
 
-from ..main import create_app
+from ..domain.models import Event, Instrument
 from ..services.universe import UniverseService
-from ..services.orderbooks import OrderbookOrchestrator
-from ..services.events import EventService
 from ..services.replay import ReplayService
 from ..adapters.telegram.bot import TelegramBot
 from ..settings import get_settings
@@ -15,7 +14,9 @@ from ..storage.db import async_session_factory
 
 app = typer.Typer(help="Bond forced seller screener")
 tinvest_app = typer.Typer(help="T-Invest tools")
+telegram_app = typer.Typer(help="Telegram tools")
 app.add_typer(tinvest_app, name="tinvest")
+app.add_typer(telegram_app, name="telegram")
 
 
 @app.command()
@@ -111,6 +112,44 @@ def tinvest_grpc_check():
     typer.echo(f"target={target} ssl_mode={ssl_mode} token_set={token_set}")
     ok = asyncio.run(grpc_channel_ready(target, credentials))
     raise typer.Exit(code=0 if ok else 1)
+
+
+async def _telegram_test_alert():
+    settings = get_settings()
+    telegram = TelegramBot(settings)
+    now = asyncio.get_event_loop().time()
+    event = Event(
+        isin="TEST00000000",
+        ts=datetime.utcnow(),
+        ytm_mid=0.12,
+        ytm_event=0.13,
+        delta_ytm_bps=100,
+        ask_lots_window=50,
+        ask_notional_window=500_000,
+        spread_ytm_bps=120.0,
+        score=9.5,
+        payload={"best_ask": 101.23, "eligible": True},
+    )
+    instrument = Instrument(
+        isin="TEST00000000",
+        figi="TESTFIGI",
+        name="Test Bond",
+        issuer="Test Issuer",
+        nominal=1000.0,
+        maturity_date=datetime.utcnow().date(),
+        eligible=True,
+        is_shortlisted=True,
+        eligibility_checked_at=datetime.utcnow(),
+    )
+    await telegram.send_event(event, instrument)
+    await telegram.close()
+    typer.echo(f"Telegram test alert sent at {now:.3f}")
+
+
+@telegram_app.command("test-alert")
+def telegram_test_alert():
+    """Отправить тестовый алерт в Telegram."""
+    asyncio.run(_telegram_test_alert())
 
 
 def main():
