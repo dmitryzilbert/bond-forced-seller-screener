@@ -40,7 +40,9 @@ async def init_db():
 
 async def close_db():
     global _engine
+    global _session_factory
     if _engine is not None:
         await _engine.dispose()
         logger.info("DB engine disposed")
         _engine = None
+        _session_factory = None

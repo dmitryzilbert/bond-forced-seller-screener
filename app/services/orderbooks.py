@@ -4,7 +4,7 @@ import asyncio
 import json
 from pathlib import Path
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 
 from ..domain.models import OrderBookSnapshot
 from ..domain.detector import History, detect_event
@@ -41,8 +41,8 @@ class OrderbookOrchestrator:
             ssl_ca_bundle=settings.tinvest_ssl_ca_bundle,
             ping_delay_ms=settings.tinvest_ping_delay_ms,
         )
-        self._start_time = datetime.utcnow()
-        self._last_metrics_log = datetime.utcnow()
+        self._start_time = datetime.now(timezone.utc)
+        self._last_metrics_log = datetime.now(timezone.utc)
         self._updates_count = 0
         self._dropped_updates = 0
         self._last_snapshot_ts: datetime | None = None
@@ -149,7 +149,7 @@ class OrderbookOrchestrator:
                 await self.events.save_event(event)
                 logger.info("[ALERT SUPPRESSED] %s reason=%s", instrument.isin, suppression_reason)
                 self._updates_count += 1
-                now = datetime.utcnow()
+                now = datetime.now(timezone.utc)
                 self._last_snapshot_ts = snapshot.ts
                 self.metrics.record_snapshot(ts=now)
                 self._maybe_log_metrics()
@@ -162,7 +162,7 @@ class OrderbookOrchestrator:
             self.metrics.record_alert()
 
         self._updates_count += 1
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
         self._last_snapshot_ts = snapshot.ts
         self.metrics.record_snapshot(ts=now)
         self._maybe_log_metrics()
@@ -175,8 +175,8 @@ class OrderbookOrchestrator:
         return None
 
     def _reset_metrics(self, active_subscriptions: int):
-        self._start_time = datetime.utcnow()
-        self._last_metrics_log = datetime.utcnow()
+        self._start_time = datetime.now(timezone.utc)
+        self._last_metrics_log = datetime.now(timezone.utc)
         self._updates_count = 0
         self._dropped_updates = 0
         self._last_snapshot_ts = None
@@ -187,7 +187,7 @@ class OrderbookOrchestrator:
         )
 
     def _maybe_log_metrics(self):
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
         if (now - self._last_metrics_log).total_seconds() < 60:
             return
         elapsed_minutes = max((now - self._start_time).total_seconds() / 60, 1 / 60)

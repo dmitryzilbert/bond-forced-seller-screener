@@ -17,8 +17,10 @@ logger = logging.getLogger(__name__)
 class TelegramBot:
     def __init__(self, settings: Settings):
         self.settings = settings
-        self.enabled = bool(settings.telegram_bot_token)
+        self.enabled = bool(settings.telegram_bot_token and settings.telegram_chat_id)
         self.bot = Bot(token=settings.telegram_bot_token) if self.enabled else None
+        if settings.telegram_bot_token and not settings.telegram_chat_id:
+            logger.warning("Telegram bot token set but TELEGRAM_CHAT_ID is missing; alerts disabled.")
         self._instrument_last_sent: Dict[str, float] = defaultdict(float)
         self._global_lock = asyncio.Lock()
         self._last_global_sent: float | None = None
