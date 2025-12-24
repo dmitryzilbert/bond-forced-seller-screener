@@ -334,12 +334,6 @@ class UniverseService:
         if amortization_flag is None:
             amortization_flag = False
         has_call_offer = instrument.has_call_offer
-        if (
-            has_call_offer is None
-            and self.settings.app_env == "mock"
-            and not self.settings.exclude_call_offer_unknown
-        ):
-            has_call_offer = False
         return self._copy_instrument(
             instrument,
             {
