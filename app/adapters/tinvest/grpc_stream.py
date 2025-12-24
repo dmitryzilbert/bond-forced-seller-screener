@@ -2,14 +2,16 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import random
 from datetime import datetime, timezone
 from pathlib import Path
 from collections import Counter
 from typing import Iterable, Protocol
 
 import grpc
-from t_tech.invest.grpc import marketdata_pb2, marketdata_pb2_grpc
+
+from ...tinvest.grpc_sdk import import_marketdata
+from ...tinvest.ids import api_instrument_id
+from ...tinvest.orderbook_stream import OrderbookStreamAdapter
 
 from ...domain.models import Instrument, OrderBookLevel, OrderBookSnapshot
 from ...services.metrics import get_metrics
@@ -22,7 +24,6 @@ class _GrpcSettings(Protocol):
     tinvest_grpc_target_prod: str
     tinvest_grpc_target_sandbox: str
     tinvest_ssl_ca_bundle: str | None
-    tinvest_ping_delay_ms: int
 
 
 def select_grpc_target(settings: _GrpcSettings) -> str:
@@ -69,7 +70,6 @@ class TInvestGrpcStream:
         target_prod: str,
         target_sandbox: str,
         ssl_ca_bundle: str | None = None,
-        ping_delay_ms: int = 30000,
         dry_run: bool = False,
         batch_size: int = 50,
         batch_sleep_range: tuple[float, float] = (0.1, 0.3),
@@ -88,14 +88,14 @@ class TInvestGrpcStream:
             tinvest_grpc_target_prod=target_prod,
             tinvest_grpc_target_sandbox=target_sandbox,
             tinvest_ssl_ca_bundle=ssl_ca_bundle,
-            tinvest_ping_delay_ms=ping_delay_ms,
         )
+        self._marketdata_pb2, self._marketdata_pb2_grpc, self._sdk_source_name = import_marketdata()
 
     async def subscribe(self, instruments: Iterable[Instrument]):
         if not self.enabled:
             return
 
-        base_instruments = [i for i in instruments if i.figi or i.isin]
+        base_instruments = [i for i in instruments if self._has_instrument_id(i)]
         if not base_instruments:
             return
 
@@ -105,25 +105,41 @@ class TInvestGrpcStream:
             target = select_grpc_target(self._settings)
             credentials, ssl_mode = build_grpc_credentials(self._settings)
             logger.info(
-                "Starting TInvest gRPC stream: target=%s token_set=%s ssl_mode=%s",
+                "Starting TInvest gRPC stream: target=%s token_set=%s ssl_mode=%s sdk=%s",
                 target,
                 bool(self.token),
                 ssl_mode,
+                self._sdk_source_name,
             )
-            channel = grpc.aio.secure_channel(target, credentials)
             try:
-                stub = marketdata_pb2_grpc.MarketDataStreamServiceStub(channel)
                 current_instruments = self._select_instruments(base_instruments)
                 if not current_instruments:
                     logger.info("No eligible shortlisted instruments to subscribe")
                     break
                 instrument_map = self._build_instrument_map(current_instruments)
-                request_iterator = self._request_iterator(current_instruments)
-                metadata = (("authorization", f"Bearer {self.token}"),)
-                responses = stub.MarketDataStream(request_iterator, metadata=metadata)
+                instrument_ids = [api_instrument_id(inst) for inst in current_instruments]
+                self._log_subscription_payload(current_instruments, instrument_ids)
+                adapter = OrderbookStreamAdapter(
+                    self.token,
+                    target,
+                    credentials,
+                    marketdata_pb2=self._marketdata_pb2,
+                    marketdata_pb2_grpc=self._marketdata_pb2_grpc,
+                    sdk_source_name=self._sdk_source_name,
+                )
+                responses = adapter.subscribe_orderbook(
+                    instrument_ids,
+                    depth=self.depth,
+                    order_book_type=self._orderbook_type_default(),
+                )
                 self._last_active_instruments = current_instruments
                 backoff_index = 0
+                first_response = True
                 async for response in responses:
+                    if first_response:
+                        first_response = False
+                        if not self._handle_first_response(response):
+                            raise ConnectionError("Orderbook subscription rejected")
                     self._handle_stream_response(response)
                     snapshot = self._parse_response(response, instrument_map)
                     if snapshot:
@@ -132,40 +148,33 @@ class TInvestGrpcStream:
                     break
                 raise ConnectionError("TInvest gRPC stream closed")
             except asyncio.CancelledError:
-                raise
+                logger.info("TInvest gRPC stream cancelled")
+                break
             except Exception as exc:  # pragma: no cover - network errors expected in prod
-                logger.warning("TInvest gRPC stream disconnected: %s", exc)
+                if isinstance(exc, grpc.aio.AioRpcError):
+                    logger.warning(
+                        "TInvest gRPC stream disconnected: code=%s details=%s",
+                        exc.code(),
+                        exc.details(),
+                    )
+                else:
+                    logger.warning("TInvest gRPC stream disconnected: %s", exc)
                 self.reconnect_count += 1
                 if self.dry_run:
                     break
                 sleep_for = backoff_steps[min(backoff_index, len(backoff_steps) - 1)]
+                logger.info("Reconnect backoff: %.1fs", sleep_for)
                 await asyncio.sleep(sleep_for)
                 backoff_index = min(backoff_index + 1, len(backoff_steps) - 1)
             finally:
-                await channel.close()
+                pass
 
-    async def _request_iterator(self, instruments: list[Instrument]):
-        ping_delay_ms = max(int(self._settings.tinvest_ping_delay_ms), 1000)
-        yield marketdata_pb2.MarketDataRequest(
-            ping_settings=marketdata_pb2.PingSettings(ping_delay_ms=ping_delay_ms)
-        )
-        for batch in self._chunked(instruments, self.batch_size):
-            request = marketdata_pb2.MarketDataRequest(
-                subscribe_order_book_request=marketdata_pb2.SubscribeOrderBookRequest(
-                    subscription_action=marketdata_pb2.SubscriptionAction.SUBSCRIPTION_ACTION_SUBSCRIBE,
-                    instruments=[
-                        marketdata_pb2.OrderBookInstrument(
-                            figi=instrument.figi or instrument.isin,
-                            depth=self.depth,
-                        )
-                        for instrument in batch
-                    ],
-                )
+    def _orderbook_type_default(self):
+        if hasattr(self._marketdata_pb2, "OrderBookType"):
+            return getattr(self._marketdata_pb2.OrderBookType, "ORDER_BOOK_TYPE_ALL", None) or getattr(
+                self._marketdata_pb2.OrderBookType, "ORDER_BOOK_TYPE_UNSPECIFIED", None
             )
-            yield request
-            await asyncio.sleep(random.uniform(*self.batch_sleep_range))
-        while True:
-            await asyncio.sleep(3600)
+        return None
 
     def _select_instruments(self, instruments: Iterable[Instrument]) -> list[Instrument]:
         filtered = [i for i in instruments if i.is_shortlisted and i.eligible]
@@ -184,15 +193,49 @@ class TInvestGrpcStream:
     def _build_instrument_map(self, instruments: Iterable[Instrument]) -> dict[str, Instrument]:
         mapping: dict[str, Instrument] = {}
         for instrument in instruments:
-            if instrument.figi:
-                mapping[instrument.figi] = instrument
-            if instrument.isin:
-                mapping[instrument.isin] = instrument
+            for key in self._instrument_keys(instrument):
+                if key:
+                    mapping[key] = instrument
         return mapping
+
+    def _instrument_keys(self, instrument: Instrument) -> list[str]:
+        keys = []
+        if instrument.instrument_uid:
+            keys.append(instrument.instrument_uid)
+        if instrument.figi:
+            keys.append(instrument.figi)
+        if instrument.isin:
+            keys.append(instrument.isin)
+        return keys
+
+    def _has_instrument_id(self, instrument: Instrument) -> bool:
+        try:
+            return bool(api_instrument_id(instrument))
+        except ValueError:
+            return False
+
+    def _log_subscription_payload(self, instruments: list[Instrument], instrument_ids: list[str]) -> None:
+        payloads = []
+        for instrument, instrument_id in zip(instruments, instrument_ids):
+            payloads.append(
+                {
+                    "instrument_id": instrument_id,
+                    "instrument_uid": instrument.instrument_uid,
+                    "figi": instrument.figi,
+                    "ticker": instrument.ticker,
+                    "class_code": instrument.class_code,
+                }
+            )
+        logger.info(
+            "Orderbook subscribe: depth=%s order_book_type=%s instruments=%s",
+            self.depth,
+            self._orderbook_type_default(),
+            payloads,
+        )
 
     def _parse_response(
         self,
-        response: marketdata_pb2.MarketDataResponse,
+        response,
         instrument_map: dict[str, Instrument],
     ) -> OrderBookSnapshot | None:
         if response is None:
@@ -203,8 +246,10 @@ class TInvestGrpcStream:
         if orderbook is None:
             return None
 
-        instrument_id = orderbook.figi or getattr(orderbook, "instrument_uid", "") or getattr(
-            orderbook, "instrument_id", ""
+        instrument_id = (
+            getattr(orderbook, "instrument_uid", "")
+            or getattr(orderbook, "instrument_id", "")
+            or getattr(orderbook, "figi", "")
         )
         instrument = instrument_map.get(instrument_id)
         if not instrument:
@@ -259,7 +304,7 @@ class TInvestGrpcStream:
         nano = int(getattr(value, "nano", 0))
         return units + nano / 1e9
 
-    def _handle_stream_response(self, response: marketdata_pb2.MarketDataResponse) -> None:
+    def _handle_stream_response(self, response) -> None:
         if response is None:
             return
         self._metrics.record_stream_message()
@@ -271,6 +316,17 @@ class TInvestGrpcStream:
 
         if hasattr(response, "HasField") and response.HasField("subscribe_order_book_response"):
             self._log_subscription_response(response.subscribe_order_book_response)
+
+    def _handle_first_response(self, response) -> bool:
+        if response is None:
+            logger.warning("Empty first response from orderbook stream")
+            return True
+
+        if hasattr(response, "HasField") and response.HasField("subscribe_order_book_response"):
+            return self._validate_subscription_response(response.subscribe_order_book_response, response)
+
+        logger.warning("First response does not contain subscribe_order_book_response")
+        return True
 
     def _log_subscription_response(self, response) -> None:
         subscriptions = (
@@ -310,6 +366,44 @@ class TInvestGrpcStream:
             f" | top_errors: {top_errors}" if top_errors else "",
         )
 
+    def _validate_subscription_response(self, response, envelope) -> bool:
+        tracking_id = getattr(envelope, "tracking_id", None)
+        stream_id = getattr(envelope, "stream_id", None)
+        logger.info(
+            "Orderbook subscribe ACK: tracking_id=%s stream_id=%s",
+            tracking_id,
+            stream_id,
+        )
+
+        subscriptions = (
+            getattr(response, "order_book_subscriptions", None)
+            or getattr(response, "order_books_subscriptions", None)
+            or []
+        )
+        if not subscriptions:
+            logger.warning("Orderbook subscribe ACK contains no subscriptions")
+            return True
+
+        errors = []
+        statuses = []
+        for item in subscriptions:
+            status_raw = getattr(item, "subscription_status", None) or getattr(item, "status", None)
+            status_name = getattr(status_raw, "name", None) or str(status_raw)
+            if status_name:
+                statuses.append(status_name)
+                status_upper = status_name.upper()
+                if "ERROR" in status_upper:
+                    errors.append(status_name)
+                elif "SUCCESS" in status_upper or "OK" in status_upper or "SUBSCRIBED" in status_upper:
+                    continue
+                else:
+                    errors.append(status_name)
+        if errors:
+            logger.warning("Orderbook subscribe rejected: statuses=%s", errors)
+            return False
+        logger.info("Orderbook subscribe status: %s", statuses)
+        return True
+
 
 class _GrpcRuntimeSettings:
     def __init__(
@@ -319,10 +413,8 @@ class _GrpcRuntimeSettings:
         tinvest_grpc_target_prod: str,
         tinvest_grpc_target_sandbox: str,
         tinvest_ssl_ca_bundle: str | None,
-        tinvest_ping_delay_ms: int,
     ) -> None:
         self.app_env = app_env
         self.tinvest_grpc_target_prod = tinvest_grpc_target_prod
         self.tinvest_grpc_target_sandbox = tinvest_grpc_target_sandbox
         self.tinvest_ssl_ca_bundle = tinvest_ssl_ca_bundle
-        self.tinvest_ping_delay_ms = tinvest_ping_delay_ms

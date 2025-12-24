@@ -43,7 +43,10 @@ def map_instrument_payload(payload: dict) -> Instrument:
 
     return Instrument(
         isin=payload.get("isin"),
+        instrument_uid=payload.get("instrument_uid") or payload.get("instrumentUid"),
         figi=payload.get("figi"),
+        ticker=payload.get("ticker"),
+        class_code=payload.get("class_code") or payload.get("classCode"),
         name=payload.get("name", ""),
         issuer=payload.get("issuer"),
         nominal=float(payload.get("nominal", 1000)),

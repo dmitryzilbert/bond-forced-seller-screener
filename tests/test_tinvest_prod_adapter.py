@@ -6,6 +6,7 @@ import httpx
 import pytest
 
 pytest.importorskip("grpc")
+marketdata_pb2 = pytest.importorskip("t_tech.invest.grpc.marketdata_pb2")
 
 from app.adapters.tinvest.client import TInvestClient
 from app.domain.models import Instrument
@@ -50,18 +51,36 @@ def test_tinvest_rest_and_stream_dry_run(monkeypatch):
         def fake_secure_channel(target, credentials):
             return DummyChannel()
 
+        class DummySubscribeResponse:
+            def __init__(self):
+                self.order_book_subscriptions = [
+                    SimpleNamespace(
+                        subscription_status=SimpleNamespace(name="SUBSCRIPTION_STATUS_SUCCESS")
+                    )
+                ]
+
+        class DummyResponse:
+            def __init__(self, orderbook=None, subscribe_order_book_response=None):
+                self.orderbook = orderbook
+                self.subscribe_order_book_response = subscribe_order_book_response
+                self.tracking_id = "track-1"
+                self.stream_id = "stream-1"
+
+            def HasField(self, name: str) -> bool:
+                return getattr(self, name, None) is not None
+
         class DummyStub:
             def __init__(self, channel):
                 self.channel = channel
 
-            def MarketDataStream(self, request_iterator, metadata=None):
+            def MarketDataServerSideStream(self, request, metadata=None, wait_for_ready=None):
                 async def generator():
-                    await request_iterator.__anext__()
-                    yield SimpleNamespace(
+                    yield DummyResponse(subscribe_order_book_response=DummySubscribeResponse())
+                    yield DummyResponse(
                         orderbook=SimpleNamespace(
                             figi="figi-test",
-                            instrument_uid="",
-                            instrument_id="",
+                            instrument_uid="uid-test",
+                            instrument_id="uid-test",
                             time=datetime.utcnow(),
                             bids=[
                                 SimpleNamespace(
@@ -75,13 +94,14 @@ def test_tinvest_rest_and_stream_dry_run(monkeypatch):
 
                 return generator()
 
+        monkeypatch.setattr("app.tinvest.orderbook_stream.grpc.aio.secure_channel", fake_secure_channel)
         monkeypatch.setattr(
-            "app.adapters.tinvest.grpc_stream.grpc.aio.secure_channel",
-            fake_secure_channel,
-        )
-        monkeypatch.setattr(
-            "app.adapters.tinvest.grpc_stream.marketdata_pb2_grpc.MarketDataStreamServiceStub",
-            DummyStub,
+            "app.adapters.tinvest.grpc_stream.import_marketdata",
+            lambda: (
+                marketdata_pb2,
+                SimpleNamespace(MarketDataStreamServiceStub=DummyStub),
+                "t_tech.invest.grpc",
+            ),
         )
 
         client = TInvestClient(
@@ -104,6 +124,7 @@ def test_tinvest_rest_and_stream_dry_run(monkeypatch):
         instrument_models = [
             Instrument(
                 isin=inst.isin,
+                instrument_uid="uid-test",
                 figi=inst.figi,
                 name=inst.name,
                 issuer=inst.issuer,

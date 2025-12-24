@@ -45,7 +45,10 @@ class TInvestRestClient:
             instruments.append(
                 {
                     "isin": item.get("isin"),
+                    "instrument_uid": item.get("instrumentUid") or item.get("uid"),
                     "figi": item.get("figi"),
+                    "ticker": item.get("ticker"),
+                    "class_code": item.get("classCode") or item.get("class_code"),
                     "name": item.get("name") or item.get("ticker"),
                     "issuer": item.get("issuerName") or item.get("name"),
                     "nominal": self._parse_money_value(item.get("nominal")) or 0,

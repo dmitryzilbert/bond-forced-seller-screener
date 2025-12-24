@@ -32,7 +32,6 @@ class TInvestClient:
         grpc_target_prod: str | None = None,
         grpc_target_sandbox: str | None = None,
         ssl_ca_bundle: str | None = None,
-        ping_delay_ms: int = 30000,
     ):
         self.rest = TInvestRestClient(token, transport=rest_transport)
         if grpc_target_prod is None or grpc_target_sandbox is None:
@@ -48,7 +47,6 @@ class TInvestClient:
                 target_sandbox=grpc_target_sandbox,
                 ssl_ca_bundle=ssl_ca_bundle,
                 dry_run=dry_run,
-                ping_delay_ms=ping_delay_ms,
             )
         else:
             self.stream = _DisabledStream()
