@@ -2,12 +2,17 @@ from __future__ import annotations
 
 import asyncio
 from datetime import datetime
+import json
+from pathlib import Path
 import typer
 from sqlalchemy import select, func
 
 from ..domain.models import Event, Instrument
+from ..domain.detector import History, detect_event
+from ..adapters.tinvest.mapping import map_orderbook_payload
 from ..services.universe import UniverseService
 from ..services.replay import ReplayService
+from ..services.events import EventService
 from ..adapters.telegram.bot import TelegramBot
 from ..settings import get_settings
 from ..storage.repo import SnapshotRepository, EventRepository
@@ -102,6 +107,123 @@ def backtest_replay(
             exit_on=exit_on,
         )
     )
+
+
+async def _detector_replay(input_path: Path, *, send_telegram: bool = False):
+    settings = get_settings()
+    universe = UniverseService(settings)
+    events = EventService(settings)
+    telegram = TelegramBot(settings) if send_telegram else None
+    metrics = get_metrics()
+    history = History(
+        max_points=settings.ask_window_history_size,
+        flush_interval_seconds=settings.ask_window_flush_seconds,
+    )
+
+    instruments = await universe.shortlist()
+    instrument_map = {
+        instrument.isin: instrument
+        for instrument in instruments
+        if getattr(instrument, "is_shortlisted", False) and getattr(instrument, "eligible", False)
+    }
+    snapshots_processed = 0
+    events_created = 0
+    tg_sent_before = metrics.tg_sent_total
+
+    def alert_suppression_reason(instrument) -> str | None:
+        if getattr(instrument, "needs_enrichment", False) and settings.suppress_alerts_when_missing_data:
+            return "missing_data"
+        if getattr(instrument, "offer_unknown", False) and settings.suppress_alerts_when_offer_unknown:
+            return "offer_unknown"
+        return None
+
+    for line in input_path.read_text().splitlines():
+        if not line.strip():
+            continue
+        data = json.loads(line)
+        snapshot = map_orderbook_payload(data)
+        if not snapshot or (not snapshot.bids and not snapshot.asks):
+            continue
+
+        instrument = instrument_map.get(snapshot.isin)
+        if not instrument:
+            continue
+
+        event = detect_event(
+            snapshot,
+            instrument,
+            history,
+            delta_ytm_max_bps=settings.delta_ytm_max_bps,
+            ask_window_min_lots=settings.ask_window_min_lots,
+            ask_window_min_notional=settings.ask_window_min_notional,
+            ask_window_kvol=settings.ask_window_kvol,
+            novelty_window_updates=settings.novelty_window_updates,
+            novelty_window_seconds=settings.novelty_window_seconds,
+            alert_hold_updates=settings.alert_hold_updates,
+            spread_ytm_max_bps=settings.spread_ytm_max_bps,
+            near_maturity_days=settings.near_maturity_days,
+            stress_params={
+                "stress_ytm_high_pct": settings.stress_ytm_high_pct,
+                "stress_price_low_pct": settings.stress_price_low_pct,
+                "stress_spread_ytm_bps": settings.stress_spread_ytm_bps,
+                "stress_dev_peer_bps": settings.stress_dev_peer_bps,
+            },
+        )
+
+        if event:
+            event.payload = {
+                **(event.payload or {}),
+                "needs_enrichment": getattr(instrument, "needs_enrichment", False),
+                "missing_reasons": getattr(instrument, "missing_reasons", []),
+                "offer_unknown": getattr(instrument, "offer_unknown", False),
+            }
+            metrics.record_candidate()
+            if event.alert:
+                suppression_reason = alert_suppression_reason(instrument)
+                if suppression_reason:
+                    event.payload = {
+                        **(event.payload or {}),
+                        "alert_suppressed_reason": suppression_reason,
+                    }
+                else:
+                    if send_telegram and telegram:
+                        if event.stress_flag:
+                            pass
+                        else:
+                            await telegram.send_event(event, instrument)
+                    metrics.record_alert()
+            await events.save_event(event)
+            events_created += 1
+
+        snapshots_processed += 1
+        metrics.record_snapshot(ts=datetime.utcnow())
+
+    if telegram:
+        await telegram.close()
+
+    tg_sent_after = metrics.tg_sent_total
+    typer.echo(
+        "Summary: snapshots_processed="
+        f"{snapshots_processed} events_created={events_created} tg_sent={tg_sent_after - tg_sent_before}"
+    )
+
+
+@app.command("detector:replay")
+def detector_replay(
+    input_path: Path = typer.Option(
+        ...,
+        "--input",
+        exists=True,
+        dir_okay=False,
+        help="Path to NDJSON orderbook snapshots.",
+    ),
+    send_telegram: bool = typer.Option(
+        False,
+        "--send-telegram",
+        help="Send Telegram alerts for detected events.",
+    ),
+):
+    asyncio.run(_detector_replay(input_path, send_telegram=send_telegram))
 
 
 @tinvest_app.command("grpc-check")
