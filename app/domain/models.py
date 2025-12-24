@@ -7,7 +7,10 @@ from pydantic import BaseModel, Field
 
 class Instrument(BaseModel):
     isin: str
+    instrument_uid: Optional[str] = None
     figi: Optional[str] = None
+    ticker: Optional[str] = None
+    class_code: Optional[str] = None
     name: str
     issuer: str | None = None
     nominal: float = 1000.0

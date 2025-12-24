@@ -25,10 +25,12 @@ python -c "from app.settings import Settings; s=Settings(); print(s.app_env, boo
 ## Prod mode (реальный поток T-Invest)
 
 1. Задайте окружение: `app_env=prod`, `tinvest_token=<tinkoff_api_token>` (readonly достаточно), при необходимости `orderbook_depth`, `database_url`.
-2. Поток стаканов использует gRPC MarketDataStream.
-3. Запустите миграции/БД: `make db` (создаст SQLite по умолчанию) или задайте свой Postgres URL.
-4. Стартуйте сервисы: `docker-compose up -d` и `make run`.
-5. Дашборд и API будут использовать реальные инструменты и стаканы через REST/gRPC T-Invest.
+2. Поток стаканов использует gRPC MarketDataServerSideStream (с fallback на MarketDataStream).
+   Все подписки выполняются через `instrument_id` (предпочтительно `instrument_uid`).
+3. Любое сообщение из стрима (включая служебные ACK/ping) обновляет heartbeat.
+4. Запустите миграции/БД: `make db` (создаст SQLite по умолчанию) или задайте свой Postgres URL.
+5. Стартуйте сервисы: `docker-compose up -d` и `make run`.
+6. Дашборд и API будут использовать реальные инструменты и стаканы через REST/gRPC T-Invest.
 
 ## Переменные окружения
 См. `.env.example`. К ключевым параметрам добавлены `TINVEST_TOKEN`, `TINVEST_ACCOUNT_ID` (опционально для лимитов), `TINVEST_GRPC_TARGET_PROD`, `TINVEST_GRPC_TARGET_SANDBOX`, `ORDERBOOK_DEPTH`.

@@ -34,6 +34,7 @@ class Metrics:
 
     def record_stream_message(self) -> None:
         self.stream_messages_total += 1
+        self.last_heartbeat_ts = datetime.now(timezone.utc)
 
     def record_stream_ping(self, *, ts: datetime | None = None) -> None:
         self.stream_pings_total += 1

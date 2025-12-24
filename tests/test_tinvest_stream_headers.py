@@ -5,6 +5,7 @@ from types import SimpleNamespace
 import pytest
 
 pytest.importorskip("grpc")
+marketdata_pb2 = pytest.importorskip("t_tech.invest.grpc.marketdata_pb2")
 
 from app.adapters.tinvest.grpc_stream import TInvestGrpcStream
 from app.domain.models import Instrument
@@ -21,21 +22,39 @@ def test_grpc_subscribe_sends_metadata_and_request(monkeypatch):
         captured["target"] = target
         return DummyChannel()
 
+    class DummySubscribeResponse:
+        def __init__(self):
+            self.order_book_subscriptions = [
+                SimpleNamespace(
+                    subscription_status=SimpleNamespace(name="SUBSCRIPTION_STATUS_SUCCESS")
+                )
+            ]
+
+    class DummyResponse:
+        def __init__(self, orderbook=None, subscribe_order_book_response=None):
+            self.orderbook = orderbook
+            self.subscribe_order_book_response = subscribe_order_book_response
+            self.tracking_id = "track-1"
+            self.stream_id = "stream-1"
+
+        def HasField(self, name: str) -> bool:
+            return getattr(self, name, None) is not None
+
     class DummyStub:
         def __init__(self, channel):
             self.channel = channel
 
-        def MarketDataStream(self, request_iterator, metadata=None):
+        def MarketDataServerSideStream(self, request, metadata=None, wait_for_ready=None):
             captured["metadata"] = metadata
+            captured["request"] = request
 
             async def generator():
-                request = await request_iterator.__anext__()
-                captured["request"] = request
-                yield SimpleNamespace(
+                yield DummyResponse(subscribe_order_book_response=DummySubscribeResponse())
+                yield DummyResponse(
                     orderbook=SimpleNamespace(
                         figi="figi-test",
-                        instrument_uid="",
-                        instrument_id="",
+                        instrument_uid="uid-test",
+                        instrument_id="uid-test",
                         time=datetime.utcnow(),
                         bids=[
                             SimpleNamespace(
@@ -49,13 +68,14 @@ def test_grpc_subscribe_sends_metadata_and_request(monkeypatch):
 
             return generator()
 
+    monkeypatch.setattr("app.tinvest.orderbook_stream.grpc.aio.secure_channel", fake_secure_channel)
     monkeypatch.setattr(
-        "app.adapters.tinvest.grpc_stream.grpc.aio.secure_channel",
-        fake_secure_channel,
-    )
-    monkeypatch.setattr(
-        "app.adapters.tinvest.grpc_stream.marketdata_pb2_grpc.MarketDataStreamServiceStub",
-        DummyStub,
+        "app.adapters.tinvest.grpc_stream.import_marketdata",
+        lambda: (
+            marketdata_pb2,
+            SimpleNamespace(MarketDataStreamServiceStub=DummyStub),
+            "t_tech.invest.grpc",
+        ),
     )
 
     stream = TInvestGrpcStream(
@@ -68,6 +88,7 @@ def test_grpc_subscribe_sends_metadata_and_request(monkeypatch):
     )
     instrument = Instrument(
         isin="RU000A0TEST0",
+        instrument_uid="uid-test",
         figi="figi-test",
         name="Test",
         issuer="Issuer",
@@ -88,5 +109,5 @@ def test_grpc_subscribe_sends_metadata_and_request(monkeypatch):
     assert captured["metadata"] == (("authorization", "Bearer secret"),)
     request = captured["request"]
     instruments = request.subscribe_order_book_request.instruments
-    assert instruments[0].figi == instrument.figi
+    assert instruments[0].instrument_id == instrument.instrument_uid
     assert instruments[0].depth == 1
