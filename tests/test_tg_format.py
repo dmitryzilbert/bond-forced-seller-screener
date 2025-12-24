@@ -50,3 +50,41 @@ def test_format_message_snapshot(monkeypatch):
         "Flags: near_maturity, stress\n"
         "Dashboard: http://localhost:8000/instrument/RU000A0JX0J2"
     )
+
+
+def test_format_message_contains_test_alert_fields(monkeypatch):
+    monkeypatch.setattr(
+        "app.adapters.telegram.formatters.days_to_maturity",
+        lambda _: 10,
+    )
+
+    event = Event(
+        isin="TEST00000000",
+        ts=datetime(2024, 1, 1),
+        ytm_mid=0.12,
+        ytm_event=0.13,
+        delta_ytm_bps=100,
+        ask_lots_window=50,
+        ask_notional_window=500_000,
+        spread_ytm_bps=120.0,
+        score=9.5,
+        payload={"best_ask": 101.23, "eligible": True},
+    )
+    instrument = Instrument(
+        isin="TEST00000000",
+        figi="TESTFIGI",
+        name="Test Bond",
+        issuer="Test Issuer",
+        nominal=1000.0,
+        maturity_date=date(2024, 12, 31),
+        eligible=True,
+        is_shortlisted=True,
+        eligibility_checked_at=datetime(2024, 1, 1),
+    )
+
+    msg = format_message(event, instrument, "http://localhost:8000")
+
+    assert "ISIN: `TEST00000000`" in msg
+    assert "YTM (mid/event): 12.00% → 13.00% (Δ +100.0 bps)" in msg
+    assert "AskVolWindowNotional: 500,000 ₽" in msg
+    assert "Dashboard: http://localhost:8000/instrument/TEST00000000" in msg

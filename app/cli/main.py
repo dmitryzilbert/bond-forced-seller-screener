@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 from datetime import datetime
 import typer
+from sqlalchemy import select, func
 
 from ..domain.models import Event, Instrument
 from ..services.universe import UniverseService
@@ -11,6 +12,8 @@ from ..adapters.telegram.bot import TelegramBot
 from ..settings import get_settings
 from ..storage.repo import SnapshotRepository, EventRepository
 from ..storage.db import async_session_factory
+from ..storage.schema import InstrumentORM
+from ..services.metrics import get_metrics
 
 app = typer.Typer(help="Bond forced seller screener")
 tinvest_app = typer.Typer(help="T-Invest tools")
@@ -114,8 +117,7 @@ def tinvest_grpc_check():
     raise typer.Exit(code=0 if ok else 1)
 
 
-async def _telegram_test_alert():
-    settings = get_settings()
+async def _telegram_test_alert(settings):
     telegram = TelegramBot(settings)
     now = asyncio.get_event_loop().time()
     event = Event(
@@ -149,7 +151,59 @@ async def _telegram_test_alert():
 @telegram_app.command("test-alert")
 def telegram_test_alert():
     """Отправить тестовый алерт в Telegram."""
-    asyncio.run(_telegram_test_alert())
+    settings = get_settings()
+    if not settings.telegram_bot_token or not settings.telegram_chat_id:
+        typer.echo("Telegram is not configured. Set TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID.")
+        raise typer.Exit(code=1)
+    asyncio.run(_telegram_test_alert(settings))
+
+
+async def _diagnose():
+    settings = get_settings()
+    session_factory = async_session_factory()
+    async with session_factory() as session:
+        instruments_count = (
+            await session.execute(select(func.count(InstrumentORM.isin)))
+        ).scalar_one()
+        shortlisted_count = (
+            await session.execute(
+                select(func.count(InstrumentORM.isin)).where(InstrumentORM.is_shortlisted.is_(True))
+            )
+        ).scalar_one()
+
+    metrics = get_metrics()
+    last_update_ts = metrics.last_update_ts.isoformat() if metrics.last_update_ts else None
+    last_heartbeat_ts = metrics.last_heartbeat_ts.isoformat() if metrics.last_heartbeat_ts else None
+
+    typer.echo(f"database_url={settings.database_url}")
+    typer.echo(f"instruments_count={instruments_count}")
+    typer.echo(f"shortlisted_count={shortlisted_count}")
+    typer.echo(f"last_update_ts={last_update_ts}")
+    typer.echo(f"last_heartbeat_ts={last_heartbeat_ts}")
+    typer.echo(
+        "thresholds="
+        + ", ".join(
+            [
+                f"delta_ytm_max_bps={settings.delta_ytm_max_bps}",
+                f"ask_window_min_lots={settings.ask_window_min_lots}",
+                f"ask_window_min_notional={settings.ask_window_min_notional}",
+                f"spread_ytm_max_bps={settings.spread_ytm_max_bps}",
+                f"alert_cooldown_min={settings.alert_cooldown_min}",
+                f"alert_hold_updates={settings.alert_hold_updates}",
+                f"shortlist_min_notional={settings.shortlist_min_notional}",
+                f"shortlist_min_updates_per_hour={settings.shortlist_min_updates_per_hour}",
+                f"allow_missing_data_to_shortlist={settings.allow_missing_data_to_shortlist}",
+                f"suppress_alerts_when_missing_data={settings.suppress_alerts_when_missing_data}",
+                f"suppress_alerts_when_offer_unknown={settings.suppress_alerts_when_offer_unknown}",
+            ]
+        )
+    )
+
+
+@app.command("diagnose")
+def diagnose():
+    """Печатает ключевые метрики и настройки для диагностики."""
+    asyncio.run(_diagnose())
 
 
 def main():
