@@ -101,7 +101,21 @@ class UniverseService:
                 key = inst.eligible_reason or "missing_data"
                 exclusion_reasons[key] = exclusion_reasons.get(key, 0) + 1
 
-        shortlisted, shortlist_reasons, missing_reasons, missing_examples = await self._apply_shortlist(checked)
+        allow_unknown_call_offer = bool(
+            getattr(self.settings, "allow_missing_call_offer", False)
+            or getattr(self.settings, "allow_unknown_call_offer", False)
+            or getattr(self.settings, "shortlist_allow_missing_call_offer", False)
+            or getattr(self.settings, "shortlist_allow_unknown_call_offer", False)
+            or not getattr(self.settings, "exclude_call_offer_unknown", True)
+        )
+        shortlist_candidates: list[Instrument] = []
+        for inst in checked:
+            if inst.eligible and inst.has_call_offer is None and not allow_unknown_call_offer:
+                exclusion_reasons["call_offer_unknown"] = exclusion_reasons.get("call_offer_unknown", 0) + 1
+                continue
+            shortlist_candidates.append(inst)
+
+        shortlisted, shortlist_reasons, missing_reasons, missing_examples = await self._apply_shortlist(shortlist_candidates)
         for key, value in shortlist_reasons.items():
             exclusion_reasons[key] = exclusion_reasons.get(key, 0) + value
 
