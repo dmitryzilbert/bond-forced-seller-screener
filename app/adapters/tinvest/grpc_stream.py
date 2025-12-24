@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import contextlib
 from datetime import datetime, timezone
 from pathlib import Path
 from collections import Counter
@@ -17,6 +18,7 @@ from ...domain.models import Instrument, OrderBookLevel, OrderBookSnapshot
 from ...services.metrics import get_metrics
 
 logger = logging.getLogger(__name__)
+_STREAM_DONE = object()
 
 
 class _GrpcSettings(Protocol):
@@ -134,16 +136,48 @@ class TInvestGrpcStream:
                 )
                 self._last_active_instruments = current_instruments
                 backoff_index = 0
-                first_response = True
-                async for response in responses:
-                    if first_response:
-                        first_response = False
-                        if not self._handle_first_response(response):
-                            raise ConnectionError("Orderbook subscription rejected")
-                    self._handle_stream_response(response)
-                    snapshot = self._parse_response(response, instrument_map)
-                    if snapshot:
-                        yield snapshot
+                first_message_event = asyncio.Event()
+                ack_event = asyncio.Event()
+                response_queue: asyncio.Queue = asyncio.Queue()
+                reader_task = asyncio.create_task(
+                    self._read_stream(responses, response_queue, first_message_event, ack_event)
+                )
+                try:
+                    try:
+                        await asyncio.wait_for(first_message_event.wait(), timeout=5.0)
+                    except asyncio.TimeoutError:
+                        logger.warning("Timed out waiting for first orderbook stream message")
+
+                    try:
+                        await asyncio.wait_for(ack_event.wait(), timeout=5.0)
+                    except asyncio.TimeoutError:
+                        logger.warning("Timed out waiting for orderbook subscribe ACK (continuing)")
+
+                    ack_validated = False
+                    while True:
+                        response = await response_queue.get()
+                        if response is _STREAM_DONE:
+                            break
+                        if isinstance(response, Exception):
+                            raise response
+                        self._handle_stream_response(response)
+                        if self._response_has_subscribe_response(response) and not ack_validated:
+                            if not self._validate_subscription_response(
+                                response.subscribe_order_book_response, response
+                            ):
+                                raise ConnectionError("Orderbook subscription rejected")
+                            ack_validated = True
+                            continue
+                        if not ack_validated:
+                            logger.debug("Skipping orderbook update before ACK")
+                            continue
+                        snapshot = self._parse_response(response, instrument_map)
+                        if snapshot:
+                            yield snapshot
+                finally:
+                    reader_task.cancel()
+                    with contextlib.suppress(asyncio.CancelledError, Exception):
+                        await reader_task
                 if self.dry_run:
                     break
                 raise ConnectionError("TInvest gRPC stream closed")
@@ -304,6 +338,34 @@ class TInvestGrpcStream:
         nano = int(getattr(value, "nano", 0))
         return units + nano / 1e9
 
+    async def _read_stream(
+        self,
+        responses,
+        queue: asyncio.Queue,
+        first_message_event: asyncio.Event,
+        ack_event: asyncio.Event,
+    ) -> None:
+        try:
+            async for response in responses:
+                first_message_event.set()
+                if self._response_has_subscribe_response(response) and not ack_event.is_set():
+                    ack_event.set()
+                await queue.put(response)
+        except asyncio.CancelledError:
+            logger.info("TInvest gRPC stream reader cancelled")
+        except Exception as exc:  # pragma: no cover - network errors expected in prod
+            logger.warning("TInvest gRPC stream reader error: %s", exc)
+            await queue.put(exc)
+        finally:
+            await queue.put(_STREAM_DONE)
+
+    def _response_has_subscribe_response(self, response) -> bool:
+        if response is None:
+            return False
+        if hasattr(response, "HasField"):
+            return response.HasField("subscribe_order_book_response")
+        return hasattr(response, "subscribe_order_book_response")
+
     def _handle_stream_response(self, response) -> None:
         if response is None:
             return
@@ -316,17 +378,10 @@ class TInvestGrpcStream:
 
         if hasattr(response, "HasField") and response.HasField("subscribe_order_book_response"):
             self._log_subscription_response(response.subscribe_order_book_response)
-
-    def _handle_first_response(self, response) -> bool:
-        if response is None:
-            logger.warning("Empty first response from orderbook stream")
-            return True
-
-        if hasattr(response, "HasField") and response.HasField("subscribe_order_book_response"):
-            return self._validate_subscription_response(response.subscribe_order_book_response, response)
-
-        logger.warning("First response does not contain subscribe_order_book_response")
-        return True
+            return
+        if hasattr(response, "HasField") and response.HasField("orderbook"):
+            return
+        logger.debug("Received empty/unknown stream message: %s", response)
 
     def _log_subscription_response(self, response) -> None:
         subscriptions = (
@@ -369,11 +424,6 @@ class TInvestGrpcStream:
     def _validate_subscription_response(self, response, envelope) -> bool:
         tracking_id = getattr(envelope, "tracking_id", None)
         stream_id = getattr(envelope, "stream_id", None)
-        logger.info(
-            "Orderbook subscribe ACK: tracking_id=%s stream_id=%s",
-            tracking_id,
-            stream_id,
-        )
 
         subscriptions = (
             getattr(response, "order_book_subscriptions", None)
@@ -399,9 +449,19 @@ class TInvestGrpcStream:
                 else:
                     errors.append(status_name)
         if errors:
-            logger.warning("Orderbook subscribe rejected: statuses=%s", errors)
+            logger.warning(
+                "Orderbook subscribe rejected: tracking_id=%s stream_id=%s statuses=%s",
+                tracking_id,
+                stream_id,
+                errors,
+            )
             return False
-        logger.info("Orderbook subscribe status: %s", statuses)
+        logger.info(
+            "Orderbook subscribe ACK: tracking_id=%s stream_id=%s statuses=%s",
+            tracking_id,
+            stream_id,
+            statuses,
+        )
         return True
 
 
