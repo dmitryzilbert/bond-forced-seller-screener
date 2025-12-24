@@ -15,6 +15,11 @@ def test_api_instrument_id_prefers_uid():
     assert api_instrument_id(instrument) == "uid-123"
 
 
+def test_api_instrument_id_accepts_dict_uid():
+    instrument = {"instrumentUid": "uid-456", "figi": "figi-456", "ticker": "TST", "classCode": "TQOB"}
+    assert api_instrument_id(instrument) == "uid-456"
+
+
 def test_api_instrument_id_falls_back_to_figi():
     instrument = SimpleNamespace(instrument_uid=None, figi="figi-123", ticker="TST", class_code="TQOB")
     assert api_instrument_id(instrument) == "figi-123"

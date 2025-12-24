@@ -28,6 +28,7 @@ python -c "from app.settings import Settings; s=Settings(); print(s.app_env, boo
 2. Поток стаканов использует gRPC MarketDataServerSideStream (с fallback на MarketDataStream).
    Все подписки выполняются через `instrument_id` (предпочтительно `instrument_uid`).
 3. Любое сообщение из стрима (включая служебные ACK/ping) обновляет heartbeat.
+   В SDK `t_tech.invest.grpc` может отсутствовать `PingDelaySettings`, поэтому код не должен его требовать.
 4. Запустите миграции/БД: `make db` (создаст SQLite по умолчанию) или задайте свой Postgres URL.
 5. Стартуйте сервисы: `docker-compose up -d` и `make run`.
 6. Дашборд и API будут использовать реальные инструменты и стаканы через REST/gRPC T-Invest.
