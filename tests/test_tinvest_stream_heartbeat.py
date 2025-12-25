@@ -11,7 +11,7 @@ from app.services.metrics import get_metrics
 def test_stream_message_updates_heartbeat():
     metrics = get_metrics()
     before_messages = metrics.stream_messages_total
-    before_heartbeat = metrics.last_heartbeat_ts
+    before_heartbeat = metrics.last_stream_message_ts
 
     stream = TInvestGrpcStream(
         "token",
@@ -25,15 +25,15 @@ def test_stream_message_updates_heartbeat():
     stream._handle_stream_response(SimpleNamespace())
 
     assert metrics.stream_messages_total == before_messages + 1
-    assert metrics.last_heartbeat_ts is not None
+    assert metrics.last_stream_message_ts is not None
     if before_heartbeat is not None:
-        assert metrics.last_heartbeat_ts >= before_heartbeat
+        assert metrics.last_stream_message_ts >= before_heartbeat
 
 
 def test_subscribe_response_updates_heartbeat():
     metrics = get_metrics()
     before_messages = metrics.stream_messages_total
-    before_heartbeat = metrics.last_heartbeat_ts
+    before_heartbeat = metrics.last_stream_message_ts
 
     stream = TInvestGrpcStream(
         "token",
@@ -54,6 +54,6 @@ def test_subscribe_response_updates_heartbeat():
     stream._handle_stream_response(DummyResponse())
 
     assert metrics.stream_messages_total == before_messages + 1
-    assert metrics.last_heartbeat_ts is not None
+    assert metrics.last_stream_message_ts is not None
     if before_heartbeat is not None:
-        assert metrics.last_heartbeat_ts >= before_heartbeat
+        assert metrics.last_stream_message_ts >= before_heartbeat

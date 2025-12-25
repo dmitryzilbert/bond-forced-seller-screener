@@ -74,6 +74,7 @@ class TInvestGrpcStream:
         dry_run: bool = False,
         batch_size: int = 50,
         batch_sleep_range: tuple[float, float] = (0.1, 0.3),
+        stream_heartbeat_interval_s: float = 20.0,
     ) -> None:
         self.token = token
         self.depth = depth
@@ -82,6 +83,7 @@ class TInvestGrpcStream:
         self.dry_run = dry_run
         self.batch_size = max(1, batch_size)
         self.batch_sleep_range = batch_sleep_range
+        self.stream_heartbeat_interval_s = stream_heartbeat_interval_s
         self._last_active_instruments: list[Instrument] = []
         self._metrics = get_metrics()
         self._settings = _GrpcRuntimeSettings(
@@ -132,6 +134,8 @@ class TInvestGrpcStream:
                     instrument_ids,
                     depth=self.depth,
                     order_book_type=self._orderbook_type_default(),
+                    heartbeat_interval_s=self.stream_heartbeat_interval_s,
+                    on_heartbeat=self._metrics.record_worker_heartbeat,
                 )
                 self._last_active_instruments = current_instruments
                 backoff_index = 0
@@ -236,10 +240,7 @@ class TInvestGrpcStream:
         return None
 
     def _select_instruments(self, instruments: Iterable[Instrument]) -> list[Instrument]:
-        filtered = [i for i in instruments if i.is_shortlisted and i.eligible]
-        if not filtered:
-            return []
-        return sorted(filtered, key=lambda inst: (inst.nominal, inst.isin), reverse=True)
+        return [i for i in instruments if i.is_shortlisted and i.eligible]
 
     def _chunked(self, items: list[Instrument], size: int):
         for idx in range(0, len(items), size):
@@ -477,20 +478,86 @@ class TInvestGrpcStream:
     def _record_subscription_metrics(self, ok_subs: list, err_subs: list) -> None:
         error_counts: dict[str, int] = {}
         limit_exceeded_total = 0
-        limit_status_value = None
+        limit_status_values: set[int] = set()
         enum_type = getattr(self._marketdata_pb2, "SubscriptionStatus", None)
         if enum_type is not None:
-            limit_status_value = getattr(enum_type, "SUBSCRIPTION_STATUS_LIMIT_EXCEEDED", None)
+            for name in ("SUBSCRIPTION_STATUS_LIMIT_EXCEEDED", "SUBSCRIPTION_STATUS_LIMIT_IS_EXCEEDED"):
+                value = getattr(enum_type, name, None)
+                if value is not None:
+                    limit_status_values.add(value)
         for item in err_subs:
             status_raw = getattr(item, "subscription_status", None) or getattr(item, "status", None)
             status_name = self._subscription_status_name(status_raw)
             error_counts[status_name] = error_counts.get(status_name, 0) + 1
-            if limit_status_value is not None and status_raw == limit_status_value:
+            if limit_status_values and status_raw in limit_status_values:
                 limit_exceeded_total += 1
         self._metrics.record_orderbook_subscriptions(
             ok_total=len(ok_subs),
             error_counts=error_counts,
             limit_exceeded_total=limit_exceeded_total,
+        )
+
+    async def fetch_orderbook_snapshot(
+        self,
+        instrument: Instrument,
+        *,
+        depth: int,
+        timeout: float | None = None,
+    ) -> OrderBookSnapshot | None:
+        if not self.enabled:
+            return None
+        try:
+            instrument_id = api_instrument_id(instrument)
+        except ValueError:
+            return None
+        target = select_grpc_target(self._settings)
+        credentials, _ = build_grpc_credentials(self._settings)
+        adapter = OrderbookStreamAdapter(
+            self.token,
+            target,
+            credentials,
+            marketdata_pb2=self._marketdata_pb2,
+            marketdata_pb2_grpc=self._marketdata_pb2_grpc,
+            sdk_source_name=self._sdk_source_name,
+        )
+        response = await adapter.get_orderbook_snapshot(
+            instrument_id,
+            depth=depth,
+            order_book_type=self._orderbook_type_default(),
+            timeout=timeout,
+        )
+        if response is None:
+            return None
+        orderbook = getattr(response, "orderbook", None)
+        if orderbook is None:
+            return None
+        return self._parse_orderbook(orderbook, instrument)
+
+    def _parse_orderbook(self, orderbook, instrument: Instrument) -> OrderBookSnapshot | None:
+        ts = self._parse_timestamp(orderbook.time)
+        bids = []
+        for item in orderbook.bids:
+            price = self._parse_quotation(item.price)
+            lots = max(int(getattr(item, "quantity", 0)), 0)
+            if price and lots > 0:
+                bids.append(OrderBookLevel(price=price, lots=lots))
+
+        asks = []
+        for item in orderbook.asks:
+            price = self._parse_quotation(item.price)
+            lots = max(int(getattr(item, "quantity", 0)), 0)
+            if price and lots > 0:
+                asks.append(OrderBookLevel(price=price, lots=lots))
+
+        if not bids and not asks:
+            return None
+
+        return OrderBookSnapshot(
+            isin=instrument.isin,
+            ts=ts or datetime.now(timezone.utc),
+            bids=bids,
+            asks=asks,
+            nominal=instrument.nominal,
         )
 
     def _subscription_status_name(self, status_raw) -> str:

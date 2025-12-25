@@ -26,6 +26,17 @@ class Settings(BaseSettings):
     )
 
     orderbook_depth: int = Field(10, alias="ORDERBOOK_DEPTH")
+    orderbook_max_subscriptions_per_stream: int = Field(
+        300,
+        alias="ORDERBOOK_MAX_SUBSCRIPTIONS_PER_STREAM",
+    )
+    stream_heartbeat_interval_s: int = Field(20, alias="STREAM_HEARTBEAT_INTERVAL_S")
+    orderbook_bootstrap_timeout_s: float = Field(8.0, alias="ORDERBOOK_BOOTSTRAP_TIMEOUT_S")
+    orderbook_bootstrap_concurrency: int = Field(
+        10,
+        alias="ORDERBOOK_BOOTSTRAP_CONCURRENCY",
+    )
+    orderbook_bootstrap_rps: float = Field(8.0, alias="ORDERBOOK_BOOTSTRAP_RPS")
     shortlist_max: int = Field(500, alias="SHORTLIST_MAX")
     shortlist_min_notional: int = Field(200_000, alias="SHORTLIST_MIN_NOTIONAL")
     shortlist_min_updates_per_hour: int = Field(2, alias="SHORTLIST_MIN_UPDATES_PER_HOUR")

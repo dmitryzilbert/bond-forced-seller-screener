@@ -86,23 +86,38 @@ def create_app() -> FastAPI:
             db_ok = False
 
         metrics = get_metrics()
-        last_heartbeat = metrics.last_heartbeat_ts
-        if last_heartbeat and last_heartbeat.tzinfo is None:
-            last_heartbeat = last_heartbeat.replace(tzinfo=timezone.utc)
+        last_stream_message = metrics.last_stream_message_ts
+        last_worker_heartbeat = metrics.last_worker_heartbeat_ts
+        if last_stream_message and last_stream_message.tzinfo is None:
+            last_stream_message = last_stream_message.replace(tzinfo=timezone.utc)
+        if last_worker_heartbeat and last_worker_heartbeat.tzinfo is None:
+            last_worker_heartbeat = last_worker_heartbeat.replace(tzinfo=timezone.utc)
         now = datetime.now(timezone.utc)
-        stale = (
-            last_heartbeat is None
-            or (now - last_heartbeat).total_seconds() > settings.liveness_max_stale_seconds
+        worker_stale = (
+            last_worker_heartbeat is None
+            or (now - last_worker_heartbeat).total_seconds() > settings.liveness_max_stale_seconds
+        )
+        stream_stale = (
+            last_stream_message is not None
+            and (now - last_stream_message).total_seconds() > settings.liveness_max_stale_seconds
         )
 
-        ok = db_ok and not stale
+        ok = db_ok and not worker_stale
         status_code = 200 if ok else 503
         return JSONResponse(
             content={
                 "status": "ok" if ok else "fail",
                 "db_ok": db_ok,
-                "last_heartbeat_ts": last_heartbeat.isoformat() if last_heartbeat else None,
-                "stale_seconds": (now - last_heartbeat).total_seconds() if last_heartbeat else None,
+                "last_stream_message_ts": last_stream_message.isoformat() if last_stream_message else None,
+                "last_worker_heartbeat_ts": (
+                    last_worker_heartbeat.isoformat() if last_worker_heartbeat else None
+                ),
+                "stream_stale_seconds": (
+                    (now - last_stream_message).total_seconds() if last_stream_message else None
+                ),
+                "worker_stale_seconds": (
+                    (now - last_worker_heartbeat).total_seconds() if last_worker_heartbeat else None
+                ),
             },
             status_code=status_code,
         )
