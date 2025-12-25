@@ -48,7 +48,23 @@ def open_orderbook_stream(
     subscribe_request,
     *,
     metadata,
+    heartbeat_interval_s: float,
+    on_heartbeat=None,
 ) -> Tuple[Iterable, str]:
+    async def request_iterator():
+        yield marketdata_pb2.MarketDataRequest(subscribe_order_book_request=subscribe_request)
+        heartbeat_request = build_get_my_subscriptions_request(marketdata_pb2)
+        while True:
+            if on_heartbeat:
+                on_heartbeat()
+            if heartbeat_request is not None:
+                yield heartbeat_request
+            await asyncio.sleep(heartbeat_interval_s)
+
+    if hasattr(stub, "MarketDataStream") and hasattr(marketdata_pb2, "MarketDataRequest"):
+        call = stub.MarketDataStream(request_iterator(), metadata=metadata)
+        return call, "bidi"
+
     if hasattr(stub, "MarketDataServerSideStream") and hasattr(
         marketdata_pb2, "MarketDataServerSideStreamRequest"
     ):
@@ -62,15 +78,23 @@ def open_orderbook_stream(
         )
         return call, "server_side"
 
-    async def request_iterator():
-        yield marketdata_pb2.MarketDataRequest(
-            subscribe_order_book_request=subscribe_request
-        )
-        while True:
-            await asyncio.sleep(3600)
+    raise AttributeError("MarketData stream API is not available")
 
-    call = stub.MarketDataStream(request_iterator(), metadata=metadata)
-    return call, "bidi"
+
+def build_get_my_subscriptions_request(marketdata_pb2):
+    if not hasattr(marketdata_pb2, "MarketDataRequest") or not hasattr(
+        marketdata_pb2, "GetMySubscriptionsRequest"
+    ):
+        return None
+    request = marketdata_pb2.MarketDataRequest()
+    payload = marketdata_pb2.GetMySubscriptionsRequest()
+    if hasattr(request, "get_my_subscriptions"):
+        getattr(request, "get_my_subscriptions").CopyFrom(payload)
+        return request
+    if hasattr(request, "get_my_subscriptions_request"):
+        getattr(request, "get_my_subscriptions_request").CopyFrom(payload)
+        return request
+    return None
 
 
 class OrderbookStreamAdapter:
@@ -110,6 +134,8 @@ class OrderbookStreamAdapter:
         *,
         depth: int,
         order_book_type=None,
+        heartbeat_interval_s: float = 20.0,
+        on_heartbeat=None,
     ):
         channel = grpc.aio.secure_channel(self._target, self._credentials)
         call = None
@@ -128,6 +154,8 @@ class OrderbookStreamAdapter:
                 self._marketdata_pb2,
                 subscribe_request,
                 metadata=metadata,
+                heartbeat_interval_s=heartbeat_interval_s,
+                on_heartbeat=on_heartbeat,
             )
             logger.info("Orderbook stream mode: %s", stream_mode)
 
@@ -141,4 +169,38 @@ class OrderbookStreamAdapter:
             if call is not None:
                 with contextlib.suppress(Exception):
                     call.cancel()
+            await channel.close()
+
+    async def get_orderbook_snapshot(
+        self,
+        instrument_id: str,
+        *,
+        depth: int,
+        order_book_type=None,
+        timeout: float | None = None,
+    ):
+        channel = grpc.aio.secure_channel(self._target, self._credentials)
+        try:
+            stub_class = getattr(self._marketdata_pb2_grpc, "MarketDataServiceStub", None)
+            if stub_class is None:
+                logger.warning("MarketDataServiceStub is not available for orderbook bootstrap")
+                return None
+            if not hasattr(self._marketdata_pb2, "GetOrderBookRequest"):
+                logger.warning("GetOrderBookRequest is not available for orderbook bootstrap")
+                return None
+            stub = stub_class(channel)
+            metadata = (("authorization", f"Bearer {self._token}"),)
+            orderbook_type = order_book_type or self._orderbook_type_default()
+            request = self._marketdata_pb2.GetOrderBookRequest(
+                instrument_id=instrument_id,
+                depth=depth,
+                order_book_type=orderbook_type,
+            )
+            if timeout is None:
+                return await stub.GetOrderBook(request, metadata=metadata)
+            return await asyncio.wait_for(
+                stub.GetOrderBook(request, metadata=metadata),
+                timeout=timeout,
+            )
+        finally:
             await channel.close()

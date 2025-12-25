@@ -32,6 +32,7 @@ class TInvestClient:
         grpc_target_prod: str | None = None,
         grpc_target_sandbox: str | None = None,
         ssl_ca_bundle: str | None = None,
+        stream_heartbeat_interval_s: float = 20.0,
     ):
         self.rest = TInvestRestClient(token, transport=rest_transport)
         if grpc_target_prod is None or grpc_target_sandbox is None:
@@ -47,6 +48,7 @@ class TInvestClient:
                 target_sandbox=grpc_target_sandbox,
                 ssl_ca_bundle=ssl_ca_bundle,
                 dry_run=dry_run,
+                stream_heartbeat_interval_s=stream_heartbeat_interval_s,
             )
         else:
             self.stream = _DisabledStream()
@@ -99,3 +101,14 @@ class TInvestClient:
             return
         async for snapshot in self.stream.subscribe(instruments):
             yield snapshot
+
+    async def fetch_orderbook_snapshot(
+        self,
+        instrument: Instrument,
+        *,
+        depth: int,
+        timeout: float | None = None,
+    ) -> OrderBookSnapshot | None:
+        if not self.stream.enabled:
+            return None
+        return await self.stream.fetch_orderbook_snapshot(instrument, depth=depth, timeout=timeout)

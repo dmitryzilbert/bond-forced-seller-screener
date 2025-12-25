@@ -55,7 +55,7 @@ def test_tinvest_rest_and_stream_dry_run(monkeypatch):
             def __init__(self):
                 self.order_book_subscriptions = [
                     SimpleNamespace(
-                        subscription_status=SimpleNamespace(name="SUBSCRIPTION_STATUS_SUCCESS")
+                        subscription_status=marketdata_pb2.SubscriptionStatus.SUBSCRIPTION_STATUS_SUCCESS
                     )
                 ]
 
@@ -72,6 +72,29 @@ def test_tinvest_rest_and_stream_dry_run(monkeypatch):
         class DummyStub:
             def __init__(self, channel):
                 self.channel = channel
+
+            def MarketDataStream(self, request_iterator, metadata=None):
+                async def generator():
+                    async for _ in request_iterator:
+                        break
+                    yield DummyResponse(subscribe_order_book_response=DummySubscribeResponse())
+                    yield DummyResponse(
+                        orderbook=SimpleNamespace(
+                            figi="figi-test",
+                            instrument_uid="uid-test",
+                            instrument_id="uid-test",
+                            time=datetime.utcnow(),
+                            bids=[
+                                SimpleNamespace(
+                                    price=SimpleNamespace(units=1000, nano=0),
+                                    quantity=2,
+                                )
+                            ],
+                            asks=[],
+                        )
+                    )
+
+                return generator()
 
             def MarketDataServerSideStream(self, request, metadata=None, wait_for_ready=None):
                 async def generator():

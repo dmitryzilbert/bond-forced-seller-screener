@@ -39,6 +39,7 @@ class OrderbookOrchestrator:
             grpc_target_prod=settings.tinvest_grpc_target_prod,
             grpc_target_sandbox=settings.tinvest_grpc_target_sandbox,
             ssl_ca_bundle=settings.tinvest_ssl_ca_bundle,
+            stream_heartbeat_interval_s=settings.stream_heartbeat_interval_s,
         )
         self._start_time = datetime.now(timezone.utc)
         self._last_metrics_log = datetime.now(timezone.utc)
@@ -71,8 +72,13 @@ class OrderbookOrchestrator:
         instruments = self._filter_shortlist(await self.universe.shortlist())
         self._reset_metrics(len(instruments))
         instrument_map = {i.isin: i for i in instruments}
+        bootstrap_task = asyncio.create_task(
+            self._bootstrap_snapshots(instruments, instrument_map)
+        )
         async for snapshot in self.client.stream_orderbooks(instruments):
             await self._handle_snapshot(snapshot, instrument_map, persist=True)
+        if bootstrap_task:
+            await bootstrap_task
 
     async def _persist_snapshot(self, snapshot: OrderBookSnapshot):
         from ..storage.repo import SnapshotRepository
@@ -92,8 +98,66 @@ class OrderbookOrchestrator:
             )
             await repo.add_snapshot(orm)
 
+    async def _bootstrap_snapshots(
+        self,
+        instruments: list,
+        instrument_map: dict,
+    ) -> None:
+        if not instruments:
+            return
+
+        concurrency = max(1, self.settings.orderbook_bootstrap_concurrency)
+        rps = max(self.settings.orderbook_bootstrap_rps, 0.1)
+        min_interval = 1.0 / rps
+        rate_lock = asyncio.Lock()
+        last_sent = {"ts": 0.0}
+        semaphore = asyncio.Semaphore(concurrency)
+
+        async def rate_limit():
+            async with rate_lock:
+                now = asyncio.get_running_loop().time()
+                sleep_for = min_interval - (now - last_sent["ts"])
+                if sleep_for > 0:
+                    await asyncio.sleep(sleep_for)
+                last_sent["ts"] = asyncio.get_running_loop().time()
+
+        async def fetch_and_ingest(inst):
+            async with semaphore:
+                await rate_limit()
+                snapshot = await self.client.fetch_orderbook_snapshot(
+                    inst,
+                    depth=self.settings.orderbook_depth,
+                    timeout=self.settings.orderbook_bootstrap_timeout_s,
+                )
+                if snapshot is None:
+                    return
+                await self._handle_snapshot(snapshot, instrument_map, persist=True)
+
+        await asyncio.gather(*(fetch_and_ingest(inst) for inst in instruments))
+
     def _filter_shortlist(self, instruments: list) -> list:
-        return [i for i in instruments if getattr(i, "is_shortlisted", False) and getattr(i, "eligible", False)]
+        filtered = [
+            i for i in instruments if getattr(i, "is_shortlisted", False) and getattr(i, "eligible", False)
+        ]
+        requested = len(filtered)
+        self.metrics.set_orderbook_subscriptions_requested(requested)
+        cap = self.settings.orderbook_max_subscriptions_per_stream
+        if requested > cap:
+            def sort_key(inst):
+                ytm_mid = getattr(inst, "ytm_mid", None)
+                if ytm_mid is not None:
+                    return (0, -ytm_mid, inst.isin)
+                return (1, 0, inst.isin)
+
+            filtered = sorted(filtered, key=sort_key)
+            filtered = filtered[:cap]
+            logger.info(
+                "requested=%s capped_to=%s due_to_stream_limit",
+                requested,
+                cap,
+            )
+            self.metrics.record_orderbook_subscriptions_capped()
+        return filtered
 
     async def _handle_snapshot(self, snapshot: OrderBookSnapshot, instrument_map: dict, *, persist: bool):
         if not snapshot or (not snapshot.bids and not snapshot.asks):
@@ -163,6 +227,7 @@ class OrderbookOrchestrator:
         self._updates_count += 1
         now = datetime.now(timezone.utc)
         self._last_snapshot_ts = snapshot.ts
+        self.metrics.record_worker_heartbeat(ts=now)
         self.metrics.record_snapshot(ts=now)
         self._maybe_log_metrics()
 
@@ -181,6 +246,7 @@ class OrderbookOrchestrator:
         self._last_snapshot_ts = None
         self._active_subscriptions = active_subscriptions
         self.metrics.set_stream_reconnects(0)
+        self.metrics.set_orderbook_subscriptions_requested(active_subscriptions)
         logger.info(
             "Orderbook stream starting: %s active subscriptions", self._active_subscriptions
         )

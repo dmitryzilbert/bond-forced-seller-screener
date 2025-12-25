@@ -402,13 +402,19 @@ async def _diagnose():
 
     metrics = get_metrics_local()
     last_update_ts = metrics.last_update_ts.isoformat() if metrics.last_update_ts else None
-    last_heartbeat_ts = metrics.last_heartbeat_ts.isoformat() if metrics.last_heartbeat_ts else None
+    last_stream_message_ts = (
+        metrics.last_stream_message_ts.isoformat() if metrics.last_stream_message_ts else None
+    )
+    last_worker_heartbeat_ts = (
+        metrics.last_worker_heartbeat_ts.isoformat() if metrics.last_worker_heartbeat_ts else None
+    )
 
     typer.echo(f"database_url={settings.database_url}")
     typer.echo(f"instruments_count={instruments_count}")
     typer.echo(f"shortlisted_count={shortlisted_count}")
     typer.echo(f"last_update_ts={last_update_ts}")
-    typer.echo(f"last_heartbeat_ts={last_heartbeat_ts}")
+    typer.echo(f"last_stream_message_ts={last_stream_message_ts}")
+    typer.echo(f"last_worker_heartbeat_ts={last_worker_heartbeat_ts}")
     typer.echo(
         "thresholds="
         + ", ".join(

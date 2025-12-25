@@ -26,7 +26,7 @@ def test_grpc_subscribe_sends_metadata_and_request(monkeypatch):
         def __init__(self):
             self.order_book_subscriptions = [
                 SimpleNamespace(
-                    subscription_status=SimpleNamespace(name="SUBSCRIPTION_STATUS_SUCCESS")
+                    subscription_status=marketdata_pb2.SubscriptionStatus.SUBSCRIPTION_STATUS_SUCCESS
                 )
             ]
 
@@ -44,11 +44,13 @@ def test_grpc_subscribe_sends_metadata_and_request(monkeypatch):
         def __init__(self, channel):
             self.channel = channel
 
-        def MarketDataServerSideStream(self, request, metadata=None, wait_for_ready=None):
+        def MarketDataStream(self, request_iterator, metadata=None):
             captured["metadata"] = metadata
-            captured["request"] = request
 
             async def generator():
+                async for request in request_iterator:
+                    captured["request"] = request
+                    break
                 yield DummyResponse(subscribe_order_book_response=DummySubscribeResponse())
                 yield DummyResponse(
                     orderbook=SimpleNamespace(
