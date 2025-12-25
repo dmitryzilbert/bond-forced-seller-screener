@@ -110,7 +110,8 @@ class OrderbookOrchestrator:
         from ..storage.schema import OrderbookSnapshotORM
         from ..storage.db import async_session_factory
 
-        async with async_session_factory() as session:
+        session_factory = async_session_factory()
+        async with session_factory() as session:
             repo = SnapshotRepository(session)
             orm = OrderbookSnapshotORM(
                 isin=snapshot.isin,
@@ -198,9 +199,10 @@ class OrderbookOrchestrator:
     ) -> None:
         try:
             await self._bootstrap_snapshots(instruments, instrument_map)
-        except Exception:
+        except Exception as exc:
             logger.exception("Orderbook bootstrap failed (ignored)")
-            self.metrics.record_orderbook_bootstrap_error("unexpected")
+            reason = type(exc).__name__ or "unexpected"
+            self.metrics.record_orderbook_bootstrap_error(reason)
 
     async def _poll_snapshots(
         self,
