@@ -117,3 +117,19 @@ class TInvestClient:
         if not self.stream.enabled:
             return None
         return await self.stream.fetch_orderbook_snapshot(instrument, depth=depth, timeout=timeout)
+
+    async def fetch_orderbook_response(
+        self,
+        instrument: Instrument,
+        *,
+        depth: int,
+        timeout: float | None = None,
+    ):
+        if not self.stream.enabled:
+            return None
+        return await self.stream.fetch_orderbook_response(instrument, depth=depth, timeout=timeout)
+
+    def build_orderbook_snapshot(self, response, instrument: Instrument) -> OrderBookSnapshot | None:
+        if not self.stream.enabled:
+            return None
+        return self.stream.build_snapshot_from_response(response, instrument)

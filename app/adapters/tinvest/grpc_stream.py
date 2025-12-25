@@ -366,7 +366,7 @@ class TInvestGrpcStream:
                 logger.debug("Skip empty orderbook update for %s", instrument.isin)
                 return None
 
-            nominal = getattr(instrument, "nominal", None) or 1000.0
+            nominal = getattr(instrument, "nominal", None)
             snapshot = OrderBookSnapshot(
                 isin=instrument.isin,
                 ts=ts or datetime.now(timezone.utc),
@@ -567,26 +567,9 @@ class TInvestGrpcStream:
         depth: int,
         timeout: float | None = None,
     ) -> OrderBookSnapshot | None:
-        if not self.enabled:
-            return None
-        try:
-            instrument_id = api_instrument_id(instrument)
-        except ValueError:
-            return None
-        target = select_grpc_target(self._settings)
-        credentials, _ = build_grpc_credentials(self._settings)
-        adapter = OrderbookStreamAdapter(
-            self.token,
-            target,
-            credentials,
-            marketdata_pb2=self._marketdata_pb2,
-            marketdata_pb2_grpc=self._marketdata_pb2_grpc,
-            sdk_source_name=self._sdk_source_name,
-        )
-        response = await adapter.get_orderbook_snapshot(
-            instrument_id,
+        response = await self.fetch_orderbook_response(
+            instrument,
             depth=depth,
-            order_book_type=self._orderbook_type_default(),
             timeout=timeout,
         )
         if response is None:
@@ -621,7 +604,7 @@ class TInvestGrpcStream:
             ts=ts or datetime.now(timezone.utc),
             bids=bids,
             asks=asks,
-            nominal=instrument.nominal,
+            nominal=instrument.nominal if instrument.nominal is not None else None,
         )
 
     def _parse_get_orderbook_response(self, response, instrument: Instrument) -> OrderBookSnapshot | None:
@@ -655,11 +638,7 @@ class TInvestGrpcStream:
         if ts is None:
             ts = self._parse_timestamp(getattr(orderbook, "time", None))
 
-        nominal = getattr(instrument, "nominal", None)
-        if not nominal:
-            nominal = self._parse_quotation(getattr(response, "nominal", None))
-        if not nominal:
-            nominal = 1000.0
+        nominal = instrument.nominal if instrument.nominal is not None else None
 
         return OrderBookSnapshot(
             isin=instrument.isin,
@@ -667,6 +646,39 @@ class TInvestGrpcStream:
             bids=bids,
             asks=asks,
             nominal=nominal,
+        )
+
+    def build_snapshot_from_response(self, response, instrument: Instrument) -> OrderBookSnapshot | None:
+        return self._parse_get_orderbook_response(response, instrument)
+
+    async def fetch_orderbook_response(
+        self,
+        instrument: Instrument,
+        *,
+        depth: int,
+        timeout: float | None = None,
+    ):
+        if not self.enabled:
+            return None
+        try:
+            instrument_id = api_instrument_id(instrument)
+        except ValueError:
+            return None
+        target = select_grpc_target(self._settings)
+        credentials, _ = build_grpc_credentials(self._settings)
+        adapter = OrderbookStreamAdapter(
+            self.token,
+            target,
+            credentials,
+            marketdata_pb2=self._marketdata_pb2,
+            marketdata_pb2_grpc=self._marketdata_pb2_grpc,
+            sdk_source_name=self._sdk_source_name,
+        )
+        return await adapter.get_orderbook_snapshot(
+            instrument_id,
+            depth=depth,
+            order_book_type=self._orderbook_type_default(),
+            timeout=timeout,
         )
 
     def _subscription_status_name(self, status_raw) -> str:
