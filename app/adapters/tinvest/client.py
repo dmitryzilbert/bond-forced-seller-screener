@@ -95,11 +95,16 @@ class TInvestClient:
                     return True
         return False
 
-    async def stream_orderbooks(self, instruments: Iterable[Instrument]):
+    async def stream_orderbooks(
+        self,
+        instruments: Iterable[Instrument],
+        *,
+        on_subscribed=None,
+    ):
         if not self.stream.enabled:
             logger.info("TInvest stream disabled (no token)")
             return
-        async for snapshot in self.stream.subscribe(instruments):
+        async for snapshot in self.stream.subscribe(instruments, on_subscribed=on_subscribed):
             yield snapshot
 
     async def fetch_orderbook_snapshot(

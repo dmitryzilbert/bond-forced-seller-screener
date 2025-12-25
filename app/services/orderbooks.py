@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 from pathlib import Path
 import logging
@@ -72,13 +73,34 @@ class OrderbookOrchestrator:
         instruments = self._filter_shortlist(await self.universe.shortlist())
         self._reset_metrics(len(instruments))
         instrument_map = {i.isin: i for i in instruments}
-        bootstrap_task = asyncio.create_task(
-            self._bootstrap_snapshots(instruments, instrument_map)
-        )
-        async for snapshot in self.client.stream_orderbooks(instruments):
-            await self._handle_snapshot(snapshot, instrument_map, persist=True)
-        if bootstrap_task:
-            await bootstrap_task
+        bootstrap_task: asyncio.Task | None = None
+        poll_task: asyncio.Task | None = None
+
+        async def on_subscribed(ok_instruments: list) -> None:
+            nonlocal instrument_map, bootstrap_task, poll_task
+            if not ok_instruments:
+                return
+            instrument_map = {i.isin: i for i in ok_instruments}
+            bootstrap_task = asyncio.create_task(
+                self._bootstrap_snapshots(ok_instruments, instrument_map)
+            )
+            poll_task = asyncio.create_task(
+                self._poll_snapshots(ok_instruments, instrument_map)
+            )
+
+        try:
+            async for snapshot in self.client.stream_orderbooks(
+                instruments,
+                on_subscribed=on_subscribed,
+            ):
+                await self._handle_snapshot(snapshot, instrument_map, persist=True)
+        finally:
+            if poll_task is not None:
+                poll_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await poll_task
+            if bootstrap_task is not None:
+                await bootstrap_task
 
     async def _persist_snapshot(self, snapshot: OrderBookSnapshot):
         from ..storage.repo import SnapshotRepository
@@ -103,15 +125,93 @@ class OrderbookOrchestrator:
         instruments: list,
         instrument_map: dict,
     ) -> None:
-        if not instruments:
+        if not instruments or not self.settings.orderbook_bootstrap_enabled:
             return
 
         concurrency = max(1, self.settings.orderbook_bootstrap_concurrency)
+        rate_limit = self._build_rate_limiter()
+        semaphore = asyncio.Semaphore(concurrency)
+
+        logger.info(
+            "Orderbook bootstrap started: instruments=%s concurrency=%s rps=%.2f",
+            len(instruments),
+            concurrency,
+            self.settings.orderbook_bootstrap_rps,
+        )
+
+        async def fetch_and_ingest(inst):
+            async with semaphore:
+                await rate_limit()
+                try:
+                    snapshot = await self.client.fetch_orderbook_snapshot(
+                        inst,
+                        depth=self.settings.orderbook_depth,
+                        timeout=self.settings.orderbook_bootstrap_timeout_s,
+                    )
+                except Exception as exc:
+                    logger.warning("Orderbook bootstrap failed for %s: %s", getattr(inst, "isin", None), exc)
+                    return
+                if snapshot is None:
+                    return
+                await self._handle_snapshot(snapshot, instrument_map, persist=True)
+
+        await asyncio.gather(*(fetch_and_ingest(inst) for inst in instruments))
+
+    async def _poll_snapshots(
+        self,
+        instruments: list,
+        instrument_map: dict,
+    ) -> None:
+        if not instruments or not self.settings.orderbook_poll_enabled:
+            return
+
+        concurrency = max(1, self.settings.orderbook_bootstrap_concurrency)
+        rate_limit = self._build_rate_limiter()
+        semaphore = asyncio.Semaphore(concurrency)
+        chunk_size = max(1, concurrency)
+        order = list(instruments)
+        cursor = 0
+
+        logger.info(
+            "Orderbook polling enabled: instruments=%s interval_s=%s concurrency=%s rps=%.2f",
+            len(instruments),
+            self.settings.orderbook_poll_interval_s,
+            concurrency,
+            self.settings.orderbook_bootstrap_rps,
+        )
+
+        async def fetch_and_ingest(inst):
+            async with semaphore:
+                await rate_limit()
+                try:
+                    snapshot = await self.client.fetch_orderbook_snapshot(
+                        inst,
+                        depth=self.settings.orderbook_depth,
+                        timeout=self.settings.orderbook_bootstrap_timeout_s,
+                    )
+                except Exception as exc:
+                    logger.warning("Orderbook poll failed for %s: %s", getattr(inst, "isin", None), exc)
+                    return
+                if snapshot is None:
+                    return
+                await self._handle_snapshot(snapshot, instrument_map, persist=True)
+
+        while True:
+            if not order:
+                await asyncio.sleep(self.settings.orderbook_poll_interval_s)
+                continue
+            batch = order[cursor:] + order[:cursor]
+            for idx in range(0, len(batch), chunk_size):
+                chunk = batch[idx : idx + chunk_size]
+                await asyncio.gather(*(fetch_and_ingest(inst) for inst in chunk))
+            cursor = (cursor + chunk_size) % len(order)
+            await asyncio.sleep(self.settings.orderbook_poll_interval_s)
+
+    def _build_rate_limiter(self):
         rps = max(self.settings.orderbook_bootstrap_rps, 0.1)
         min_interval = 1.0 / rps
         rate_lock = asyncio.Lock()
         last_sent = {"ts": 0.0}
-        semaphore = asyncio.Semaphore(concurrency)
 
         async def rate_limit():
             async with rate_lock:
@@ -121,19 +221,7 @@ class OrderbookOrchestrator:
                     await asyncio.sleep(sleep_for)
                 last_sent["ts"] = asyncio.get_running_loop().time()
 
-        async def fetch_and_ingest(inst):
-            async with semaphore:
-                await rate_limit()
-                snapshot = await self.client.fetch_orderbook_snapshot(
-                    inst,
-                    depth=self.settings.orderbook_depth,
-                    timeout=self.settings.orderbook_bootstrap_timeout_s,
-                )
-                if snapshot is None:
-                    return
-                await self._handle_snapshot(snapshot, instrument_map, persist=True)
-
-        await asyncio.gather(*(fetch_and_ingest(inst) for inst in instruments))
+        return rate_limit
 
     def _filter_shortlist(self, instruments: list) -> list:
         filtered = [

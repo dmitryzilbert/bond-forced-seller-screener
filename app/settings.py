@@ -32,11 +32,14 @@ class Settings(BaseSettings):
     )
     stream_heartbeat_interval_s: int = Field(20, alias="STREAM_HEARTBEAT_INTERVAL_S")
     orderbook_bootstrap_timeout_s: float = Field(8.0, alias="ORDERBOOK_BOOTSTRAP_TIMEOUT_S")
+    orderbook_bootstrap_enabled: bool = Field(True, alias="ORDERBOOK_BOOTSTRAP_ENABLED")
     orderbook_bootstrap_concurrency: int = Field(
-        10,
+        8,
         alias="ORDERBOOK_BOOTSTRAP_CONCURRENCY",
     )
-    orderbook_bootstrap_rps: float = Field(8.0, alias="ORDERBOOK_BOOTSTRAP_RPS")
+    orderbook_bootstrap_rps: float = Field(10.0, alias="ORDERBOOK_BOOTSTRAP_RPS")
+    orderbook_poll_enabled: bool = Field(False, alias="ORDERBOOK_POLL_ENABLED")
+    orderbook_poll_interval_s: int = Field(60, alias="ORDERBOOK_POLL_INTERVAL_S")
     shortlist_max: int = Field(500, alias="SHORTLIST_MAX")
     shortlist_min_notional: int = Field(200_000, alias="SHORTLIST_MIN_NOTIONAL")
     shortlist_min_updates_per_hour: int = Field(2, alias="SHORTLIST_MIN_UPDATES_PER_HOUR")

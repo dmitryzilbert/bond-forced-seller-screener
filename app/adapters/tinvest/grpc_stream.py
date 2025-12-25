@@ -5,7 +5,7 @@ import logging
 import contextlib
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Iterable, Protocol
+from typing import Awaitable, Callable, Iterable, Protocol
 
 import grpc
 
@@ -94,7 +94,12 @@ class TInvestGrpcStream:
         )
         self._marketdata_pb2, self._marketdata_pb2_grpc, self._sdk_source_name = import_marketdata()
 
-    async def subscribe(self, instruments: Iterable[Instrument]):
+    async def subscribe(
+        self,
+        instruments: Iterable[Instrument],
+        *,
+        on_subscribed: Callable[[list[Instrument]], Awaitable[None] | None] | None = None,
+    ):
         if not self.enabled:
             return
 
@@ -156,11 +161,12 @@ class TInvestGrpcStream:
                     except asyncio.TimeoutError:
                         logger.warning("Timed out waiting for orderbook subscribe ACK (continuing)")
 
-                    ack_validated = False
-                    while True:
-                        response = await response_queue.get()
-                        if response is _STREAM_DONE:
-                            break
+                ack_validated = False
+                ack_callback_called = False
+                while True:
+                    response = await response_queue.get()
+                    if response is _STREAM_DONE:
+                        break
                         if isinstance(response, Exception):
                             raise response
                         self._handle_stream_response(response)
@@ -196,6 +202,9 @@ class TInvestGrpcStream:
                                         uid,
                                     )
                             ack_validated = True
+                            if on_subscribed is not None and not ack_callback_called:
+                                ack_callback_called = True
+                                await self._notify_subscribed(on_subscribed, self._last_active_instruments)
                             continue
                         if not ack_validated:
                             logger.debug("Skipping orderbook update before ACK")
@@ -594,6 +603,18 @@ class TInvestGrpcStream:
             logger.warning("No instruments matched subscription ACK ids: %s", ", ".join(sorted(ok_ids)))
             return instruments
         return filtered
+
+    async def _notify_subscribed(
+        self,
+        callback: Callable[[list[Instrument]], Awaitable[None] | None],
+        instruments: list[Instrument],
+    ) -> None:
+        try:
+            result = callback(instruments)
+            if asyncio.iscoroutine(result):
+                await result
+        except Exception as exc:  # pragma: no cover - defensive guard
+            logger.warning("Orderbook subscribe callback failed: %s", exc)
 
 
 class _GrpcRuntimeSettings:
