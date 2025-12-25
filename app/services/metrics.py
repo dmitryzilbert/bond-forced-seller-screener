@@ -14,6 +14,9 @@ class Metrics:
         self.stream_pings_total = 0
         self.stream_payload_total: dict[str, int] = {}
         self.stream_reconnect_total = 0
+        self.stream_unmapped_orderbooks_total = 0
+        self.parse_success_total = 0
+        self.parse_error_total: dict[str, int] = {}
         self.eligible_instruments_total = 0
         self.shortlisted_instruments_total = 0
         self.orderbook_subscriptions_ok_total = 0
@@ -55,6 +58,17 @@ class Metrics:
     def record_stream_payload(self, payload: str | None) -> None:
         name = payload or "unknown"
         self.stream_payload_total[name] = self.stream_payload_total.get(name, 0) + 1
+
+    def record_stream_unmapped_orderbook(self) -> None:
+        self.stream_unmapped_orderbooks_total += 1
+
+    def record_parse_success(self) -> None:
+        self.parse_success_total += 1
+
+    def record_parse_error(self, exc_name: str) -> None:
+        if not exc_name:
+            exc_name = "unknown"
+        self.parse_error_total[exc_name] = self.parse_error_total.get(exc_name, 0) + 1
 
     def record_worker_heartbeat(self, *, ts: datetime | None = None) -> None:
         self.last_worker_heartbeat_ts = ts or datetime.now(timezone.utc)
@@ -123,6 +137,8 @@ class Metrics:
             f"stream_messages_total {self.stream_messages_total}",
             f"stream_pings_total {self.stream_pings_total}",
             f"stream_reconnect_total {self.stream_reconnect_total}",
+            f"stream_unmapped_orderbooks_total {self.stream_unmapped_orderbooks_total}",
+            f"parse_success_total {self.parse_success_total}",
             f"eligible_instruments_total {self.eligible_instruments_total}",
             f"shortlisted_instruments_total {self.shortlisted_instruments_total}",
             f"orderbook_subscriptions_requested {self.orderbook_subscriptions_requested}",
@@ -137,6 +153,8 @@ class Metrics:
         ]
         for payload_name, count in sorted(self.stream_payload_total.items()):
             lines.append(f'stream_payload_total{{payload="{payload_name}"}} {count}')
+        for exc_name, count in sorted(self.parse_error_total.items()):
+            lines.append(f'parse_error_total{{exc="{exc_name}"}} {count}')
         for status_name, count in sorted(self.orderbook_subscriptions_error_total.items()):
             lines.append(
                 f'orderbook_subscriptions_error_total{{status_name="{status_name}"}} {count}'

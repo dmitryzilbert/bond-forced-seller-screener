@@ -191,11 +191,10 @@ class OrderbookStreamAdapter:
             stub = stub_class(channel)
             metadata = (("authorization", f"Bearer {self._token}"),)
             orderbook_type = order_book_type or self._orderbook_type_default()
-            request = self._marketdata_pb2.GetOrderBookRequest(
-                instrument_id=instrument_id,
-                depth=depth,
-                order_book_type=orderbook_type,
-            )
+            req_kwargs = {"instrument_id": instrument_id, "depth": depth}
+            if "order_book_type" in self._marketdata_pb2.GetOrderBookRequest.DESCRIPTOR.fields_by_name:
+                req_kwargs["order_book_type"] = orderbook_type
+            request = self._marketdata_pb2.GetOrderBookRequest(**req_kwargs)
             if timeout is None:
                 return await stub.GetOrderBook(request, metadata=metadata)
             return await asyncio.wait_for(
