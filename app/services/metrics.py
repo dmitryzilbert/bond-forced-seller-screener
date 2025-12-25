@@ -12,6 +12,7 @@ class Metrics:
         self.tg_sent_total = 0
         self.stream_messages_total = 0
         self.stream_pings_total = 0
+        self.stream_payload_total: dict[str, int] = {}
         self.stream_reconnect_total = 0
         self.eligible_instruments_total = 0
         self.shortlisted_instruments_total = 0
@@ -20,6 +21,9 @@ class Metrics:
         self.orderbook_subscriptions_capped_total = 0
         self.orderbook_subscriptions_requested = 0
         self.orderbook_subscriptions_error_total: dict[str, int] = {}
+        self.orderbook_bootstrap_attempt_total = 0
+        self.orderbook_bootstrap_success_total = 0
+        self.orderbook_bootstrap_error_total: dict[str, int] = {}
         self.last_update_ts: datetime | None = now
         self.last_stream_message_ts: datetime | None = now
         self.last_worker_heartbeat_ts: datetime | None = now
@@ -47,6 +51,10 @@ class Metrics:
         if ts is None:
             return
         self.last_stream_message_ts = ts
+
+    def record_stream_payload(self, payload: str | None) -> None:
+        name = payload or "unknown"
+        self.stream_payload_total[name] = self.stream_payload_total.get(name, 0) + 1
 
     def record_worker_heartbeat(self, *, ts: datetime | None = None) -> None:
         self.last_worker_heartbeat_ts = ts or datetime.now(timezone.utc)
@@ -80,6 +88,19 @@ class Metrics:
     def set_orderbook_subscriptions_requested(self, value: int) -> None:
         self.orderbook_subscriptions_requested = max(value, 0)
 
+    def record_orderbook_bootstrap_attempt(self, count: int = 1) -> None:
+        self.orderbook_bootstrap_attempt_total += max(count, 0)
+
+    def record_orderbook_bootstrap_success(self, count: int = 1) -> None:
+        self.orderbook_bootstrap_success_total += max(count, 0)
+
+    def record_orderbook_bootstrap_error(self, reason: str, count: int = 1) -> None:
+        if count <= 0:
+            return
+        self.orderbook_bootstrap_error_total[reason] = (
+            self.orderbook_bootstrap_error_total.get(reason, 0) + count
+        )
+
     def should_send_liveness_alert(self, *, now: datetime, cooldown_minutes: int, threshold_minutes: int) -> bool:
         if self.last_update_ts is None:
             return False
@@ -111,11 +132,17 @@ class Metrics:
                 f"{self.orderbook_subscriptions_limit_exceeded_total}"
             ),
             f"orderbook_subscriptions_capped_total {self.orderbook_subscriptions_capped_total}",
+            f"orderbook_bootstrap_attempt_total {self.orderbook_bootstrap_attempt_total}",
+            f"orderbook_bootstrap_success_total {self.orderbook_bootstrap_success_total}",
         ]
+        for payload_name, count in sorted(self.stream_payload_total.items()):
+            lines.append(f'stream_payload_total{{payload="{payload_name}"}} {count}')
         for status_name, count in sorted(self.orderbook_subscriptions_error_total.items()):
             lines.append(
                 f'orderbook_subscriptions_error_total{{status_name="{status_name}"}} {count}'
             )
+        for reason, count in sorted(self.orderbook_bootstrap_error_total.items()):
+            lines.append(f'orderbook_bootstrap_error_total{{reason="{reason}"}} {count}')
         return "\n".join(lines) + "\n"
 
 
