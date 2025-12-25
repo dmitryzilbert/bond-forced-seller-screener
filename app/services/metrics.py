@@ -9,6 +9,8 @@ class Metrics:
         self.snapshots_ingested_total = 0
         self.events_candidate_total = 0
         self.events_alert_total = 0
+        self.events_saved_total = 0
+        self.events_save_error_total: dict[str, int] = {}
         self.tg_sent_total = 0
         self.stream_messages_total = 0
         self.stream_pings_total = 0
@@ -41,6 +43,14 @@ class Metrics:
 
     def record_alert(self) -> None:
         self.events_alert_total += 1
+
+    def record_event_saved(self) -> None:
+        self.events_saved_total += 1
+
+    def record_event_save_error(self, exc_name: str) -> None:
+        if not exc_name:
+            exc_name = "unknown"
+        self.events_save_error_total[exc_name] = self.events_save_error_total.get(exc_name, 0) + 1
 
     def record_tg_sent(self) -> None:
         self.tg_sent_total += 1
@@ -133,6 +143,7 @@ class Metrics:
             f"snapshots_ingested_total {self.snapshots_ingested_total}",
             f"events_candidate_total {self.events_candidate_total}",
             f"events_alert_total {self.events_alert_total}",
+            f"events_saved_total {self.events_saved_total}",
             f"tg_sent_total {self.tg_sent_total}",
             f"stream_messages_total {self.stream_messages_total}",
             f"stream_pings_total {self.stream_pings_total}",
@@ -155,6 +166,8 @@ class Metrics:
             lines.append(f'stream_payload_total{{payload="{payload_name}"}} {count}')
         for exc_name, count in sorted(self.parse_error_total.items()):
             lines.append(f'parse_error_total{{exc="{exc_name}"}} {count}')
+        for exc_name, count in sorted(self.events_save_error_total.items()):
+            lines.append(f'events_save_error_total{{exc="{exc_name}"}} {count}')
         for status_name, count in sorted(self.orderbook_subscriptions_error_total.items()):
             lines.append(
                 f'orderbook_subscriptions_error_total{{status_name="{status_name}"}} {count}'
