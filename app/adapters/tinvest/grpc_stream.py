@@ -213,8 +213,14 @@ class TInvestGrpcStream:
                             ack_validated = True
                             if on_subscribed is not None and not ack_callback_called:
                                 ack_callback_called = True
-                                await self._notify_subscribed(
-                                    on_subscribed, self._last_active_instruments
+                                logger.info(
+                                    "on_subscribed scheduled (%s instruments)",
+                                    len(self._last_active_instruments),
+                                )
+                                asyncio.create_task(
+                                    self._notify_subscribed_safe(
+                                        on_subscribed, self._last_active_instruments
+                                    )
                                 )
                             continue
                         if not ack_validated:
@@ -703,12 +709,19 @@ class TInvestGrpcStream:
         callback: Callable[[list[Instrument]], Awaitable[None] | None],
         instruments: list[Instrument],
     ) -> None:
+        result = callback(instruments)
+        if asyncio.iscoroutine(result):
+            await result
+
+    async def _notify_subscribed_safe(
+        self,
+        callback: Callable[[list[Instrument]], Awaitable[None] | None],
+        instruments: list[Instrument],
+    ) -> None:
         try:
-            result = callback(instruments)
-            if asyncio.iscoroutine(result):
-                await result
-        except Exception as exc:  # pragma: no cover - defensive guard
-            logger.warning("Orderbook subscribe callback failed: %s", exc)
+            await self._notify_subscribed(callback, instruments)
+        except Exception:  # pragma: no cover - defensive guard
+            logger.exception("on_subscribed handler failed (ignored)")
 
 
 class _GrpcRuntimeSettings:

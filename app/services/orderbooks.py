@@ -84,7 +84,7 @@ class OrderbookOrchestrator:
                 return
             instrument_map = {i.isin: i for i in ok_instruments}
             bootstrap_task = asyncio.create_task(
-                self._bootstrap_snapshots(ok_instruments, instrument_map)
+                self._bootstrap_snapshots_safe(ok_instruments, instrument_map)
             )
             poll_task = asyncio.create_task(
                 self._poll_snapshots(ok_instruments, instrument_map)
@@ -102,7 +102,8 @@ class OrderbookOrchestrator:
                 with contextlib.suppress(asyncio.CancelledError):
                     await poll_task
             if bootstrap_task is not None:
-                await bootstrap_task
+                with contextlib.suppress(asyncio.CancelledError, Exception):
+                    await bootstrap_task
 
     async def _persist_snapshot(self, snapshot: OrderBookSnapshot):
         from ..storage.repo import SnapshotRepository
@@ -150,6 +151,16 @@ class OrderbookOrchestrator:
                         depth=self.settings.orderbook_depth,
                         timeout=self.settings.orderbook_bootstrap_timeout_s,
                     )
+                    if snapshot is None:
+                        instrument_id = getattr(inst, "instrument_uid", None) or getattr(
+                            inst, "figi", None
+                        ) or getattr(inst, "isin", None)
+                        logger.info("Orderbook bootstrap empty response for %s", instrument_id)
+                        async with counter_lock:
+                            error_count += 1
+                        self.metrics.record_orderbook_bootstrap_error("empty_response")
+                        return
+                    await self._handle_snapshot(snapshot, instrument_map, persist=True)
                 except Exception as exc:
                     instrument_id = getattr(inst, "instrument_uid", None) or getattr(inst, "figi", None) or getattr(
                         inst, "isin", None
@@ -173,22 +184,23 @@ class OrderbookOrchestrator:
                         error_count += 1
                     self.metrics.record_orderbook_bootstrap_error(reason)
                     return
-                if snapshot is None:
-                    instrument_id = getattr(inst, "instrument_uid", None) or getattr(inst, "figi", None) or getattr(
-                        inst, "isin", None
-                    )
-                    logger.info("Orderbook bootstrap empty response for %s", instrument_id)
-                    async with counter_lock:
-                        error_count += 1
-                    self.metrics.record_orderbook_bootstrap_error("empty_response")
-                    return
-                await self._handle_snapshot(snapshot, instrument_map, persist=True)
                 async with counter_lock:
                     success_count += 1
                 self.metrics.record_orderbook_bootstrap_success()
 
         await asyncio.gather(*(fetch_and_ingest(inst) for inst in instruments))
         logger.info("bootstrap done: success=%s error=%s", success_count, error_count)
+
+    async def _bootstrap_snapshots_safe(
+        self,
+        instruments: list,
+        instrument_map: dict,
+    ) -> None:
+        try:
+            await self._bootstrap_snapshots(instruments, instrument_map)
+        except Exception:
+            logger.exception("Orderbook bootstrap failed (ignored)")
+            self.metrics.record_orderbook_bootstrap_error("unexpected")
 
     async def _poll_snapshots(
         self,
