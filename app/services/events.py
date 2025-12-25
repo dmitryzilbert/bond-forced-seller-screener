@@ -1,20 +1,35 @@
 from __future__ import annotations
 
 import datetime
+import logging
 from dataclasses import dataclass
 from typing import List, Literal, Optional
 
 from ..domain.models import Event
 from ..storage.repo import EventRepository
 from ..settings import Settings
+from .metrics import get_metrics
+
+logger = logging.getLogger(__name__)
 
 
 class EventService:
     def __init__(self, settings: Settings):
+        self.settings = settings
         self.repo = EventRepository(settings)
+        self.metrics = get_metrics()
 
-    async def save_event(self, event: Event):
-        await self.repo.add_event(event)
+    async def save_event(self, event: Event, *, persist: bool = True):
+        if not persist:
+            return
+        try:
+            await self.repo.add_event(event)
+        except Exception as exc:
+            self.metrics.record_event_save_error(type(exc).__name__)
+            logger.exception("Failed to save event for %s", event.isin)
+            raise
+        else:
+            self.metrics.record_event_saved()
 
     async def recent_events(self, limit: int = 30) -> List[Event]:
         return await self.repo.list_recent(limit=limit)
@@ -23,6 +38,10 @@ class EventService:
         return await self.repo.list_by_isin(isin, limit=limit)
 
     async def filtered_events(self, params: "EventFilter") -> List[Event]:
+        filtered, _ = await self.filtered_events_with_prefilter_count(params)
+        return filtered
+
+    async def filtered_events_with_prefilter_count(self, params: "EventFilter") -> tuple[List[Event], int]:
         hours = params.hours or 24
         limit = params.limit or 30
         since = datetime.datetime.utcnow() - datetime.timedelta(hours=hours)
@@ -37,6 +56,7 @@ class EventService:
             min_delta_bps=params.min_delta_bps,
             isin=params.isin,
         )
+        pre_filter_count = len(events)
 
         def matches_payload(event: Event) -> bool:
             payload = event.payload or {}
@@ -67,7 +87,7 @@ class EventService:
             return True
 
         filtered = [event for event in events if matches_payload(event)]
-        return filtered
+        return filtered, pre_filter_count
 
 
 @dataclass

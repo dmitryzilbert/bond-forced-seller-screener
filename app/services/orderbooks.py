@@ -344,7 +344,7 @@ class OrderbookOrchestrator:
                     **(event.payload or {}),
                     "alert_suppressed_reason": suppression_reason,
                 }
-                await self.events.save_event(event)
+                await self.events.save_event(event, persist=persist)
                 logger.info("[ALERT SUPPRESSED] %s reason=%s", instrument.isin, suppression_reason)
                 self._updates_count += 1
                 now = datetime.now(timezone.utc)
@@ -352,7 +352,11 @@ class OrderbookOrchestrator:
                 self.metrics.record_snapshot(ts=now)
                 self._maybe_log_metrics()
                 return
-            await self.events.save_event(event)
+
+        if event:
+            await self.events.save_event(event, persist=persist)
+
+        if event and event.alert:
             if event.stress_flag:
                 logger.info("[STRESS ONLY] TG muted for %s", event.isin)
             else:

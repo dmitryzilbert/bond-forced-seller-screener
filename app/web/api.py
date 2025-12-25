@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from fastapi import APIRouter
 from typing import Optional
 from ..services.events import EventService, EventFilter
@@ -10,6 +11,7 @@ api_router = APIRouter()
 settings = get_settings()
 event_service = EventService(settings)
 orderbook_service = OrderbookService(settings)
+logger = logging.getLogger(__name__)
 
 
 @api_router.get("/events")
@@ -43,7 +45,13 @@ async def events(
         eligible_reason=eligible_reason,
         isin=isin,
     )
-    return [e.model_dump() for e in await event_service.filtered_events(params)]
+    events, pre_filter_count = await event_service.filtered_events_with_prefilter_count(params)
+    logger.info(
+        "events_pre_filter_count=%s db_url=%s",
+        pre_filter_count,
+        settings.database_url,
+    )
+    return [e.model_dump() for e in events]
 
 
 @api_router.get("/instrument/{isin}")
