@@ -13,6 +13,7 @@ from ..domain.models import OrderBookSnapshot
 from ..domain.detector import History, detect_event
 from ..adapters.tinvest.client import TInvestClient
 from ..adapters.tinvest.mapping import map_orderbook_payload
+from ..tinvest.ids import api_instrument_id
 from ..settings import Settings
 from ..services.events import EventService
 from ..services.universe import UniverseService
@@ -136,36 +137,75 @@ class OrderbookOrchestrator:
         rate_limit = self._build_rate_limiter()
         semaphore = asyncio.Semaphore(concurrency)
         counter_lock = asyncio.Lock()
-        success_count = 0
-        error_count = 0
+        fetch_ok_count = 0
+        persist_ok_count = 0
+        persist_error_count = 0
+        dropped_count = 0
 
-        logger.info("bootstrap starting for %s instruments", len(instruments))
+        logger.info("bootstrap starting %s", len(instruments))
         self.metrics.record_orderbook_bootstrap_attempt(len(instruments))
 
         async def fetch_and_ingest(inst):
-            nonlocal success_count, error_count
+            nonlocal fetch_ok_count, persist_ok_count, persist_error_count, dropped_count
             async with semaphore:
                 await rate_limit()
+                instrument_id = None
                 try:
-                    snapshot = await self.client.fetch_orderbook_snapshot(
+                    instrument_id = api_instrument_id(inst)
+                except ValueError:
+                    instrument_id = None
+                figi = getattr(inst, "figi", None)
+                uid = getattr(inst, "instrument_uid", None)
+                instrument_isin = getattr(inst, "isin", None)
+                if not instrument_isin:
+                    logger.warning(
+                        "Orderbook bootstrap dropped snapshot: missing_isin instrument_id=%s figi=%s uid=%s "
+                        "instrument_isin=%s",
+                        instrument_id,
+                        figi,
+                        uid,
+                        instrument_isin,
+                    )
+                    async with counter_lock:
+                        dropped_count += 1
+                    self.metrics.record_snapshot_dropped("missing_isin")
+                    return
+                try:
+                    response = await self.client.fetch_orderbook_response(
                         inst,
                         depth=self.settings.orderbook_depth,
                         timeout=self.settings.orderbook_bootstrap_timeout_s,
                     )
-                    if snapshot is None:
-                        instrument_id = getattr(inst, "instrument_uid", None) or getattr(
-                            inst, "figi", None
-                        ) or getattr(inst, "isin", None)
+                    if response is None:
                         logger.info("Orderbook bootstrap empty response for %s", instrument_id)
-                        async with counter_lock:
-                            error_count += 1
                         self.metrics.record_orderbook_bootstrap_error("empty_response")
                         return
-                    await self._handle_snapshot(snapshot, instrument_map, persist=True)
+                    async with counter_lock:
+                        fetch_ok_count += 1
+                    self.metrics.record_orderbook_bootstrap_fetch_ok()
+                    snapshot = self.client.build_orderbook_snapshot(response, inst)
+                    if snapshot is None:
+                        self.metrics.record_orderbook_bootstrap_error("empty_snapshot")
+                        return
+                    try:
+                        await self._persist_snapshot(snapshot)
+                    except Exception as exc:
+                        logger.exception(
+                            "Orderbook bootstrap persist failed: instrument_id=%s figi=%s uid=%s isin=%s",
+                            instrument_id,
+                            figi,
+                            uid,
+                            instrument_isin,
+                        )
+                        async with counter_lock:
+                            persist_error_count += 1
+                        self.metrics.record_orderbook_bootstrap_persist_error(type(exc).__name__)
+                        return
+                    async with counter_lock:
+                        persist_ok_count += 1
+                    self.metrics.record_orderbook_bootstrap_persist_ok()
+                    await self._handle_snapshot(snapshot, instrument_map, persist=False)
                 except Exception as exc:
-                    instrument_id = getattr(inst, "instrument_uid", None) or getattr(inst, "figi", None) or getattr(
-                        inst, "isin", None
-                    )
                     reason = type(exc).__name__
                     if isinstance(exc, grpc.aio.AioRpcError):
                         reason = exc.code().name if exc.code() else reason
@@ -181,16 +221,17 @@ class OrderbookOrchestrator:
                             instrument_id,
                             exc,
                         )
-                    async with counter_lock:
-                        error_count += 1
                     self.metrics.record_orderbook_bootstrap_error(reason)
                     return
-                async with counter_lock:
-                    success_count += 1
-                self.metrics.record_orderbook_bootstrap_success()
 
         await asyncio.gather(*(fetch_and_ingest(inst) for inst in instruments))
-        logger.info("bootstrap done: success=%s error=%s", success_count, error_count)
+        logger.info(
+            "bootstrap done fetch_ok=%s persist_ok=%s persist_err=%s dropped=%s",
+            fetch_ok_count,
+            persist_ok_count,
+            persist_error_count,
+            dropped_count,
+        )
 
     async def _bootstrap_snapshots_safe(
         self,
@@ -299,13 +340,25 @@ class OrderbookOrchestrator:
             self._dropped_updates += 1
             return
 
+        if not snapshot.isin:
+            self._dropped_updates += 1
+            self.metrics.record_snapshot_dropped("missing_isin")
+            logger.warning("Orderbook snapshot dropped: missing_isin snapshot_isin=%s", snapshot.isin)
+            return
+
         instrument = instrument_map.get(snapshot.isin)
         if not instrument:
             self._dropped_updates += 1
             return
 
         if persist:
-            await self._persist_snapshot(snapshot)
+            try:
+                await self._persist_snapshot(snapshot)
+            except Exception:
+                logger.exception("Orderbook snapshot persist failed: isin=%s", snapshot.isin)
+                raise
+
+        self.metrics.record_snapshot()
 
         event = detect_event(
             snapshot,

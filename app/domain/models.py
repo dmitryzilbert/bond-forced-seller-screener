@@ -37,7 +37,7 @@ class OrderBookSnapshot(BaseModel):
     ts: datetime
     bids: List[OrderBookLevel] = Field(default_factory=list)
     asks: List[OrderBookLevel] = Field(default_factory=list)
-    nominal: float = 1000.0
+    nominal: float | None = None
 
     @property
     def best_bid(self) -> float | None:

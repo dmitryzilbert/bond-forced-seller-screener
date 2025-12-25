@@ -28,7 +28,11 @@ class Metrics:
         self.orderbook_subscriptions_error_total: dict[str, int] = {}
         self.orderbook_bootstrap_attempt_total = 0
         self.orderbook_bootstrap_success_total = 0
+        self.orderbook_bootstrap_fetch_ok_total = 0
+        self.orderbook_bootstrap_persist_ok_total = 0
+        self.orderbook_bootstrap_persist_error_total: dict[str, int] = {}
         self.orderbook_bootstrap_error_total: dict[str, int] = {}
+        self.snapshot_dropped_total: dict[str, int] = {}
         self.last_update_ts: datetime | None = now
         self.last_stream_message_ts: datetime | None = now
         self.last_worker_heartbeat_ts: datetime | None = now
@@ -118,12 +122,34 @@ class Metrics:
     def record_orderbook_bootstrap_success(self, count: int = 1) -> None:
         self.orderbook_bootstrap_success_total += max(count, 0)
 
+    def record_orderbook_bootstrap_fetch_ok(self, count: int = 1) -> None:
+        self.orderbook_bootstrap_fetch_ok_total += max(count, 0)
+
+    def record_orderbook_bootstrap_persist_ok(self, count: int = 1) -> None:
+        self.orderbook_bootstrap_persist_ok_total += max(count, 0)
+
+    def record_orderbook_bootstrap_persist_error(self, exc_name: str, count: int = 1) -> None:
+        if count <= 0:
+            return
+        if not exc_name:
+            exc_name = "unknown"
+        self.orderbook_bootstrap_persist_error_total[exc_name] = (
+            self.orderbook_bootstrap_persist_error_total.get(exc_name, 0) + count
+        )
+
     def record_orderbook_bootstrap_error(self, reason: str, count: int = 1) -> None:
         if count <= 0:
             return
         self.orderbook_bootstrap_error_total[reason] = (
             self.orderbook_bootstrap_error_total.get(reason, 0) + count
         )
+
+    def record_snapshot_dropped(self, reason: str, count: int = 1) -> None:
+        if count <= 0:
+            return
+        if not reason:
+            reason = "unknown"
+        self.snapshot_dropped_total[reason] = self.snapshot_dropped_total.get(reason, 0) + count
 
     def should_send_liveness_alert(self, *, now: datetime, cooldown_minutes: int, threshold_minutes: int) -> bool:
         if self.last_update_ts is None:
@@ -161,6 +187,8 @@ class Metrics:
             f"orderbook_subscriptions_capped_total {self.orderbook_subscriptions_capped_total}",
             f"orderbook_bootstrap_attempt_total {self.orderbook_bootstrap_attempt_total}",
             f"orderbook_bootstrap_success_total {self.orderbook_bootstrap_success_total}",
+            f"orderbook_bootstrap_fetch_ok_total {self.orderbook_bootstrap_fetch_ok_total}",
+            f"orderbook_bootstrap_persist_ok_total {self.orderbook_bootstrap_persist_ok_total}",
         ]
         for payload_name, count in sorted(self.stream_payload_total.items()):
             lines.append(f'stream_payload_total{{payload="{payload_name}"}} {count}')
@@ -174,6 +202,10 @@ class Metrics:
             )
         for reason, count in sorted(self.orderbook_bootstrap_error_total.items()):
             lines.append(f'orderbook_bootstrap_error_total{{reason="{reason}"}} {count}')
+        for exc_name, count in sorted(self.orderbook_bootstrap_persist_error_total.items()):
+            lines.append(f'orderbook_bootstrap_persist_error_total{{exc="{exc_name}"}} {count}')
+        for reason, count in sorted(self.snapshot_dropped_total.items()):
+            lines.append(f'snapshot_dropped_total{{reason="{reason}"}} {count}')
         return "\n".join(lines) + "\n"
 
 
