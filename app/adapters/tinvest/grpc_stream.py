@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import contextlib
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Awaitable, Callable, Iterable, Protocol
@@ -25,6 +26,12 @@ class _GrpcSettings(Protocol):
     tinvest_grpc_target_prod: str
     tinvest_grpc_target_sandbox: str
     tinvest_ssl_ca_bundle: str | None
+
+
+@dataclass(frozen=True)
+class InstrumentMaps:
+    by_uid: dict[str, Instrument]
+    by_figi: dict[str, Instrument]
 
 
 def select_grpc_target(settings: _GrpcSettings) -> str:
@@ -124,7 +131,7 @@ class TInvestGrpcStream:
                 if not current_instruments:
                     logger.info("No eligible shortlisted instruments to subscribe")
                     break
-                instrument_map = self._build_instrument_map(current_instruments)
+                instrument_map = self._build_instrument_maps(current_instruments)
                 instrument_ids = [api_instrument_id(inst) for inst in current_instruments]
                 self._log_subscription_payload(current_instruments, instrument_ids)
                 adapter = OrderbookStreamAdapter(
@@ -180,7 +187,7 @@ class TInvestGrpcStream:
                                 current_instruments, ok_subs
                             )
                             if ok_instruments:
-                                instrument_map = self._build_instrument_map(ok_instruments)
+                                instrument_map = self._build_instrument_maps(ok_instruments)
                                 self._last_active_instruments = ok_instruments
                             if err_subs:
                                 tracking_id = getattr(ack, "tracking_id", None)
@@ -263,13 +270,15 @@ class TInvestGrpcStream:
     def active_subscription_count(self) -> int:
         return len(self._last_active_instruments)
 
-    def _build_instrument_map(self, instruments: Iterable[Instrument]) -> dict[str, Instrument]:
-        mapping: dict[str, Instrument] = {}
+    def _build_instrument_maps(self, instruments: Iterable[Instrument]) -> InstrumentMaps:
+        map_by_uid: dict[str, Instrument] = {}
+        map_by_figi: dict[str, Instrument] = {}
         for instrument in instruments:
-            for key in self._instrument_keys(instrument):
-                if key:
-                    mapping[key] = instrument
-        return mapping
+            if instrument.instrument_uid:
+                map_by_uid[instrument.instrument_uid] = instrument
+            if instrument.figi:
+                map_by_figi[instrument.figi] = instrument
+        return InstrumentMaps(by_uid=map_by_uid, by_figi=map_by_figi)
 
     def _instrument_keys(self, instrument: Instrument) -> list[str]:
         keys = []
@@ -309,7 +318,7 @@ class TInvestGrpcStream:
     def _parse_response(
         self,
         response,
-        instrument_map: dict[str, Instrument],
+        instrument_map: InstrumentMaps,
     ) -> OrderBookSnapshot | None:
         if response is None:
             return None
@@ -319,41 +328,52 @@ class TInvestGrpcStream:
         if orderbook is None:
             return None
 
-        instrument_id = (
-            getattr(orderbook, "instrument_uid", "")
-            or getattr(orderbook, "instrument_id", "")
-            or getattr(orderbook, "figi", "")
-        )
-        instrument = instrument_map.get(instrument_id)
-        if not instrument:
+        try:
+            uid = getattr(orderbook, "instrument_uid", "") or ""
+            figi = getattr(orderbook, "figi", "") or ""
+            instrument = instrument_map.by_uid.get(uid) or instrument_map.by_figi.get(figi)
+            if not instrument:
+                self._metrics.record_stream_unmapped_orderbook()
+                logger.warning("Unmapped orderbook update: uid=%s figi=%s", uid or None, figi or None)
+                return None
+
+            ts = self._parse_timestamp(orderbook.time)
+            bids = []
+            for item in orderbook.bids:
+                price = self._parse_quotation(item.price)
+                lots = max(int(getattr(item, "quantity", 0)), 0)
+                if price and lots > 0:
+                    bids.append(OrderBookLevel(price=price, lots=lots))
+
+            asks = []
+            for item in orderbook.asks:
+                price = self._parse_quotation(item.price)
+                lots = max(int(getattr(item, "quantity", 0)), 0)
+                if price and lots > 0:
+                    asks.append(OrderBookLevel(price=price, lots=lots))
+
+            last_price = self._parse_quotation(getattr(orderbook, "last_price", None))
+            if not bids and not asks and last_price:
+                bids.append(OrderBookLevel(price=last_price, lots=1))
+
+            if not bids and not asks:
+                logger.debug("Skip empty orderbook update for %s", instrument.isin)
+                return None
+
+            nominal = getattr(instrument, "nominal", None) or 1000.0
+            snapshot = OrderBookSnapshot(
+                isin=instrument.isin,
+                ts=ts or datetime.now(timezone.utc),
+                bids=bids,
+                asks=asks,
+                nominal=nominal,
+            )
+            self._metrics.record_parse_success()
+            return snapshot
+        except Exception as exc:  # pragma: no cover - defensive guard
+            self._metrics.record_parse_error(type(exc).__name__)
+            logger.warning("Orderbook parse error: %s", exc)
             return None
-
-        ts = self._parse_timestamp(orderbook.time)
-        bids = []
-        for item in orderbook.bids:
-            price = self._parse_quotation(item.price)
-            lots = max(int(getattr(item, "quantity", 0)), 0)
-            if price and lots > 0:
-                bids.append(OrderBookLevel(price=price, lots=lots))
-
-        asks = []
-        for item in orderbook.asks:
-            price = self._parse_quotation(item.price)
-            lots = max(int(getattr(item, "quantity", 0)), 0)
-            if price and lots > 0:
-                asks.append(OrderBookLevel(price=price, lots=lots))
-
-        if not bids and not asks:
-            logger.debug("Skip empty orderbook update for %s", instrument.isin)
-            return None
-
-        return OrderBookSnapshot(
-            isin=instrument.isin,
-            ts=ts or datetime.now(timezone.utc),
-            bids=bids,
-            asks=asks,
-            nominal=instrument.nominal,
-        )
 
     def _parse_timestamp(self, value) -> datetime | None:
         if not value:
@@ -583,6 +603,10 @@ class TInvestGrpcStream:
             if price and lots > 0:
                 asks.append(OrderBookLevel(price=price, lots=lots))
 
+        last_price = self._parse_quotation(getattr(orderbook, "last_price", None))
+        if not bids and not asks and last_price:
+            bids.append(OrderBookLevel(price=last_price, lots=1))
+
         if not bids and not asks:
             return None
 
@@ -609,6 +633,12 @@ class TInvestGrpcStream:
             lots = max(int(getattr(item, "quantity", 0)), 0)
             if price and lots > 0:
                 asks.append(OrderBookLevel(price=price, lots=lots))
+
+        last_price = self._parse_quotation(
+            getattr(orderbook, "last_price", None) or getattr(response, "last_price", None)
+        )
+        if not bids and not asks and last_price:
+            bids.append(OrderBookLevel(price=last_price, lots=1))
 
         if not bids and not asks:
             return None
