@@ -328,36 +328,36 @@ class OrderbookOrchestrator:
             },
         )
 
-        if event:
+        if event is None:
+            return
+
+        suppression_reason = None
+        if event.alert:
+            suppression_reason = self._alert_suppression_reason(instrument)
+
+        event.payload = {
+            **(event.payload or {}),
+            "needs_enrichment": getattr(instrument, "needs_enrichment", False),
+            "missing_reasons": getattr(instrument, "missing_reasons", []),
+            "offer_unknown": getattr(instrument, "offer_unknown", False),
+            "candidate": bool(getattr(event, "candidate", False)),
+            "alert": bool(getattr(event, "alert", False)),
+        }
+        if suppression_reason:
             event.payload = {
                 **(event.payload or {}),
-                "needs_enrichment": getattr(instrument, "needs_enrichment", False),
-                "missing_reasons": getattr(instrument, "missing_reasons", []),
-                "offer_unknown": getattr(instrument, "offer_unknown", False),
+                "alert_suppressed_reason": suppression_reason,
             }
-            self.metrics.record_candidate()
 
-        if event and event.alert:
-            suppression_reason = self._alert_suppression_reason(instrument)
-            if suppression_reason:
-                event.payload = {
-                    **(event.payload or {}),
-                    "alert_suppressed_reason": suppression_reason,
-                }
-                await self.events.save_event(event, persist=persist)
-                logger.info("[ALERT SUPPRESSED] %s reason=%s", instrument.isin, suppression_reason)
-                self._updates_count += 1
-                now = datetime.now(timezone.utc)
-                self._last_snapshot_ts = snapshot.ts
-                self.metrics.record_snapshot(ts=now)
-                self._maybe_log_metrics()
-                return
+        self.metrics.record_candidate()
 
-        if event:
+        if getattr(event, "candidate", False):
             await self.events.save_event(event, persist=persist)
 
-        if event and event.alert:
-            if event.stress_flag:
+        if event.alert:
+            if suppression_reason:
+                logger.info("[ALERT SUPPRESSED] %s reason=%s", instrument.isin, suppression_reason)
+            elif event.stress_flag:
                 logger.info("[STRESS ONLY] TG muted for %s", event.isin)
             else:
                 await self.telegram.send_event(event, instrument)
