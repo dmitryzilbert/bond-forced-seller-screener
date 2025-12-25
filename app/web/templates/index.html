@@ -76,7 +76,7 @@
   <p class="status" id="status">Показываются последние 24 часа, только eligible=true.</p>
 </div>
 
-<div class="card table-scroll">
+<div class="card table-scroll" id="eventsCard">
   <table>
     <thead>
       <tr>
@@ -93,6 +93,24 @@
     </thead>
     <tbody id="eventsBody"></tbody>
   </table>
+  <p class="status" id="eventsEmpty" style="display:none;">Событий пока нет.</p>
+</div>
+
+<div class="card table-scroll" id="snapshotsCard">
+  <h2>Latest snapshots</h2>
+  <table>
+    <thead>
+      <tr>
+        <th>Время (UTC)</th>
+        <th>ISIN</th>
+        <th>Best bid</th>
+        <th>Best ask</th>
+        <th>Mid</th>
+      </tr>
+    </thead>
+    <tbody id="snapshotsBody"></tbody>
+  </table>
+  <p class="status" id="snapshotsEmpty" style="display:none;">Снапшоты пока не загружены.</p>
 </div>
 
 <script>
@@ -112,7 +130,10 @@
   };
 
   const bodyEl = document.getElementById('eventsBody');
+  const snapshotsBodyEl = document.getElementById('snapshotsBody');
   const statusEl = document.getElementById('status');
+  const eventsEmptyEl = document.getElementById('eventsEmpty');
+  const snapshotsEmptyEl = document.getElementById('snapshotsEmpty');
 
   document.querySelectorAll('.toggle').forEach(btn => {
     btn.addEventListener('click', () => {
@@ -184,9 +205,26 @@
       bodyEl.appendChild(row);
     });
 
+    eventsEmptyEl.style.display = events.length ? 'none' : 'block';
     const rangeText = state.hours === 24 ? 'последние 24 часа' : 'последние 7 дней';
     const eligibleText = state.eligible === 'eligible' ? 'только eligible=true' : state.eligible === 'excluded' ? 'только исключённые' : 'все бумаги';
     statusEl.textContent = `Показываются ${rangeText}, ${eligibleText}. Сортировка: ${state.sortBy}.`;
+  }
+
+  function renderSnapshots(snapshots) {
+    snapshotsBodyEl.innerHTML = '';
+    snapshots.forEach(snap => {
+      const row = document.createElement('tr');
+      row.innerHTML = `
+        <td class="muted">${new Date(snap.ts).toISOString().replace('T',' ').replace('Z','')}</td>
+        <td><a href="/instrument/${snap.isin}">${snap.isin}</a></td>
+        <td>${formatNumber(snap.best_bid, 4)}</td>
+        <td>${formatNumber(snap.best_ask, 4)}</td>
+        <td>${formatNumber(snap.mid, 4)}</td>
+      `;
+      snapshotsBodyEl.appendChild(row);
+    });
+    snapshotsEmptyEl.style.display = snapshots.length ? 'none' : 'block';
   }
 
   async function refresh() {
@@ -214,8 +252,16 @@
     const resp = await fetch(`/api/events?${params.toString()}`);
     const data = await resp.json();
     render(data);
+    await refreshSnapshots();
   }
 
   render(initialEvents);
+  refreshSnapshots();
+
+  async function refreshSnapshots() {
+    const resp = await fetch('/api/snapshots?limit=50');
+    const data = await resp.json();
+    renderSnapshots(data);
+  }
 </script>
 {% endblock %}

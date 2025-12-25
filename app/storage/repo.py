@@ -184,6 +184,11 @@ class SnapshotRepository:
         self.session.add(snapshot)
         await self.session.commit()
 
+    async def list_latest(self, limit: int = 50) -> list[OrderbookSnapshotORM]:
+        stmt = select(OrderbookSnapshotORM).order_by(desc(OrderbookSnapshotORM.ts)).limit(limit)
+        rows = (await self.session.execute(stmt)).scalars().all()
+        return rows
+
     async def list_recent(self, isin: str, limit: int = 100):
         stmt = select(OrderbookSnapshotORM).where(OrderbookSnapshotORM.isin == isin).order_by(desc(OrderbookSnapshotORM.ts)).limit(limit)
         rows = (await self.session.execute(stmt)).scalars().all()

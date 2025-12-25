@@ -496,3 +496,36 @@ class OrderbookService:
             repo = SnapshotRepository(session)
             result = await repo.latest(isin)
             return result
+
+    async def latest_snapshots(self, limit: int = 50) -> list[dict]:
+        async with self.session_factory() as session:
+            repo = SnapshotRepository(session)
+            rows = await repo.list_latest(limit)
+            return [self._snapshot_payload(row) for row in rows]
+
+    @staticmethod
+    def _snapshot_payload(row) -> dict:
+        bids = list(row.bids_json or [])[:3]
+        asks = list(row.asks_json or [])[:3]
+        best_bid = row.best_bid if row.best_bid is not None else (bids[0].get("price") if bids else None)
+        best_ask = row.best_ask if row.best_ask is not None else (asks[0].get("price") if asks else None)
+        mid = OrderbookService._mid_price(best_bid, best_ask)
+        return {
+            "isin": row.isin,
+            "ts": row.ts,
+            "best_bid": best_bid,
+            "best_ask": best_ask,
+            "mid": mid,
+            "bids": bids,
+            "asks": asks,
+        }
+
+    @staticmethod
+    def _mid_price(best_bid: float | None, best_ask: float | None) -> float | None:
+        if best_bid is not None and best_ask is not None:
+            return (best_bid + best_ask) / 2
+        if best_bid is not None:
+            return best_bid
+        if best_ask is not None:
+            return best_ask
+        return None

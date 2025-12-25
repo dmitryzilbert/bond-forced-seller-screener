@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from unittest.mock import AsyncMock
 
 import asyncio
@@ -119,17 +119,18 @@ def test_shortlist_filters_by_liveness(universe: UniverseService, monkeypatch):
         AsyncMock(return_value=[live_instrument, slow_instrument]),
     )
 
+    base_time = datetime.utcnow() - timedelta(hours=1)
     live_snapshots = [
         OrderBookSnapshot(
             isin="LIVE1",
-            ts=datetime(2024, 1, 1, 10, 0, 0),
+            ts=base_time,
             bids=[OrderBookLevel(price=105.0, lots=3)],
             asks=[],
             nominal=1000,
         ),
         OrderBookSnapshot(
             isin="LIVE1",
-            ts=datetime(2024, 1, 1, 10, 30, 0),
+            ts=base_time + timedelta(minutes=30),
             bids=[OrderBookLevel(price=106.0, lots=3)],
             asks=[],
             nominal=1000,
@@ -138,7 +139,7 @@ def test_shortlist_filters_by_liveness(universe: UniverseService, monkeypatch):
     slow_snapshots = [
         OrderBookSnapshot(
             isin="SLOW1",
-            ts=datetime(2024, 1, 1, 10, 0, 0),
+            ts=base_time,
             bids=[OrderBookLevel(price=90.0, lots=1)],
             asks=[],
             nominal=1000,
@@ -213,17 +214,18 @@ def test_shortlist_missing_modes(universe_factory, monkeypatch):
         amortization_flag=False,
         has_call_offer=None,
     )
+    base_time = datetime.utcnow() - timedelta(hours=1)
     snapshots = [
         OrderBookSnapshot(
             isin="CALL2",
-            ts=datetime(2024, 1, 1, 10, 0, 0),
+            ts=base_time,
             bids=[OrderBookLevel(price=101.0, lots=100)],
             asks=[OrderBookLevel(price=102.0, lots=100)],
             nominal=1000,
         ),
         OrderBookSnapshot(
             isin="CALL2",
-            ts=datetime(2024, 1, 1, 11, 0, 0),
+            ts=base_time + timedelta(minutes=30),
             bids=[OrderBookLevel(price=101.0, lots=100)],
             asks=[OrderBookLevel(price=102.0, lots=100)],
             nominal=1000,

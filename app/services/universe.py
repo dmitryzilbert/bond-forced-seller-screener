@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import logging
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import List
 
@@ -131,7 +131,7 @@ class UniverseService:
         )
 
     async def _apply_eligibility(self, instruments: list[Instrument]) -> list[Instrument]:
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
         async with self.session_factory() as session:
             repo = InstrumentRepository(session)
             cache = await repo.index_by_isin()
@@ -183,11 +183,13 @@ class UniverseService:
 
     async def _apply_shortlist(self, instruments: list[Instrument]):
         eligible = [i for i in instruments if i.eligible]
-        liveness_metrics = await self._collect_liveness_metrics()
+        liveness_metrics, latest_snapshots = await self._collect_liveness_metrics()
         shortlisted: list[Instrument] = []
         exclusion_reasons: dict[str, int] = {}
         missing_reasons: dict[str, int] = {}
         missing_examples: list[dict] = []
+        now = datetime.utcnow()
+        max_age = timedelta(seconds=self.settings.price_max_age_s)
 
         def track_exclusion(reason: str):
             exclusion_reasons[reason] = exclusion_reasons.get(reason, 0) + 1
@@ -215,7 +217,8 @@ class UniverseService:
         for inst in eligible:
             metrics = liveness_metrics.get(inst.isin)
             missing = self._instrument_missing_reasons(inst)
-            if metrics is None:
+            latest_snapshot = latest_snapshots.get(inst.isin)
+            if self._snapshot_missing_price(latest_snapshot, now=now, max_age=max_age):
                 missing.append("missing_price")
 
             if missing:
@@ -260,11 +263,15 @@ class UniverseService:
         self.instruments = shortlisted
         return shortlisted, exclusion_reasons, missing_reasons, missing_examples
 
-    async def _collect_liveness_metrics(self) -> dict[str, LivenessMetrics]:
+    async def _collect_liveness_metrics(self) -> tuple[dict[str, LivenessMetrics], dict[str, OrderBookSnapshot]]:
         snapshots = await self._load_orderbook_snapshots()
         grouped: dict[str, list[OrderBookSnapshot]] = {}
+        latest: dict[str, OrderBookSnapshot] = {}
         for snap in snapshots:
             grouped.setdefault(snap.isin, []).append(snap)
+            current = latest.get(snap.isin)
+            if current is None or snap.ts > current.ts:
+                latest[snap.isin] = snap
 
         metrics: dict[str, LivenessMetrics] = {}
         for isin, snaps in grouped.items():
@@ -277,7 +284,7 @@ class UniverseService:
             updates_per_hour = len(snaps_sorted) / duration_hours
             max_notional = max(self._snapshot_notional(s) for s in snaps_sorted)
             metrics[isin] = LivenessMetrics(updates_per_hour=updates_per_hour, max_notional=max_notional)
-        return metrics
+        return metrics, latest
 
     def _instrument_missing_reasons(self, instrument: Instrument) -> list[str]:
         reasons: list[str] = []
@@ -325,6 +332,35 @@ class UniverseService:
         if snap.asks:
             candidates.append(snap.asks[0].price * snap.asks[0].lots * snap.nominal)
         return max(candidates) if candidates else 0.0
+
+    def _snapshot_price(self, snap: OrderBookSnapshot) -> float | None:
+        best_bid = snap.best_bid
+        best_ask = snap.best_ask
+        if best_bid is not None and best_ask is not None:
+            return (best_bid + best_ask) / 2
+        if best_bid is not None:
+            return best_bid
+        if best_ask is not None:
+            return best_ask
+        return None
+
+    def _snapshot_missing_price(
+        self,
+        snapshot: OrderBookSnapshot | None,
+        *,
+        now: datetime,
+        max_age: timedelta,
+    ) -> bool:
+        if snapshot is None:
+            return True
+        snapshot_ts = snapshot.ts
+        if snapshot_ts.tzinfo is None:
+            snapshot_ts = snapshot_ts.replace(tzinfo=timezone.utc)
+        if now.tzinfo is None:
+            now = now.replace(tzinfo=timezone.utc)
+        if now - snapshot_ts > max_age:
+            return True
+        return self._snapshot_price(snapshot) is None
 
     async def _resolve_call_offer(self, instrument: Instrument, cached=None) -> bool | None:
         if self._should_use_cache(cached, instrument):
