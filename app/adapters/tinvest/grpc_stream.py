@@ -167,51 +167,51 @@ class TInvestGrpcStream:
                     response = await response_queue.get()
                     if response is _STREAM_DONE:
                         break
-                        if isinstance(response, Exception):
-                            raise response
-                        self._handle_stream_response(response)
-                        if self._response_has_subscribe_response(response) and not ack_validated:
-                            ack = response.subscribe_order_book_response
-                            ok_subs, err_subs = self._split_subscription_response(ack)
-                            self._record_subscription_metrics(ok_subs, err_subs)
-                            if len(ok_subs) == 0:
-                                raise RuntimeError("Orderbook subscription rejected")
-                            ok_instruments = self._select_instruments_from_subscriptions(
-                                current_instruments, ok_subs
-                            )
-                            if ok_instruments:
-                                instrument_map = self._build_instrument_map(ok_instruments)
-                                self._last_active_instruments = ok_instruments
-                            if err_subs:
-                                tracking_id = getattr(ack, "tracking_id", None)
-                                for item in err_subs:
-                                    status_raw = getattr(item, "subscription_status", None) or getattr(
-                                        item, "status", None
-                                    )
-                                    status_name = self._subscription_status_name(status_raw)
-                                    instrument_id = getattr(item, "instrument_id", None)
-                                    figi = getattr(item, "figi", None)
-                                    uid = getattr(item, "instrument_uid", None) or getattr(item, "uid", None)
-                                    logger.warning(
-                                        "Orderbook subscription rejected: tracking_id=%s status=%s "
-                                        "instrument_id=%s figi=%s uid=%s",
-                                        tracking_id,
-                                        status_name,
-                                        instrument_id,
-                                        figi,
-                                        uid,
-                                    )
-                            ack_validated = True
-                            if on_subscribed is not None and not ack_callback_called:
-                                ack_callback_called = True
-                                await self._notify_subscribed(on_subscribed, self._last_active_instruments)
-                            continue
-                        if not ack_validated:
-                            logger.debug("Skipping orderbook update before ACK")
-                            continue
-                        snapshot = self._parse_response(response, instrument_map)
-                        if snapshot:
-                            yield snapshot
+                    if isinstance(response, Exception):
+                        raise response
+                    self._handle_stream_response(response)
+                    if self._response_has_subscribe_response(response) and not ack_validated:
+                        ack = response.subscribe_order_book_response
+                        ok_subs, err_subs = self._split_subscription_response(ack)
+                        self._record_subscription_metrics(ok_subs, err_subs)
+                        if len(ok_subs) == 0:
+                            raise RuntimeError("Orderbook subscription rejected")
+                        ok_instruments = self._select_instruments_from_subscriptions(
+                            current_instruments, ok_subs
+                        )
+                        if ok_instruments:
+                            instrument_map = self._build_instrument_map(ok_instruments)
+                            self._last_active_instruments = ok_instruments
+                        if err_subs:
+                            tracking_id = getattr(ack, "tracking_id", None)
+                            for item in err_subs:
+                                status_raw = getattr(item, "subscription_status", None) or getattr(
+                                    item, "status", None
+                                )
+                                status_name = self._subscription_status_name(status_raw)
+                                instrument_id = getattr(item, "instrument_id", None)
+                                figi = getattr(item, "figi", None)
+                                uid = getattr(item, "instrument_uid", None) or getattr(item, "uid", None)
+                                logger.warning(
+                                    "Orderbook subscription rejected: tracking_id=%s status=%s "
+                                    "instrument_id=%s figi=%s uid=%s",
+                                    tracking_id,
+                                    status_name,
+                                    instrument_id,
+                                    figi,
+                                    uid,
+                                )
+                        ack_validated = True
+                        if on_subscribed is not None and not ack_callback_called:
+                            ack_callback_called = True
+                            await self._notify_subscribed(on_subscribed, self._last_active_instruments)
+                        continue
+                    if not ack_validated:
+                        logger.debug("Skipping orderbook update before ACK")
+                        continue
+                    snapshot = self._parse_response(response, instrument_map)
+                    if snapshot:
+                        yield snapshot
                 finally:
                     reader_task.cancel()
                     with contextlib.suppress(asyncio.CancelledError, Exception):
@@ -405,6 +405,9 @@ class TInvestGrpcStream:
         if response is None:
             return
         self._metrics.record_stream_message()
+        payload_name = self._payload_name(response)
+        self._metrics.record_stream_payload(payload_name)
+        logger.debug("Orderbook stream payload: %s", payload_name)
         if hasattr(response, "HasField") and response.HasField("ping"):
             ping = getattr(response, "ping", None)
             ping_ts = self._parse_timestamp(getattr(ping, "time", None)) if ping else None
@@ -417,6 +420,27 @@ class TInvestGrpcStream:
         if hasattr(response, "HasField") and response.HasField("orderbook"):
             return
         logger.debug("Received empty/unknown stream message: %s", response)
+
+    def _payload_name(self, response) -> str:
+        payload_name = None
+        if response is None:
+            return "unknown"
+        if hasattr(response, "WhichOneof"):
+            try:
+                payload_name = response.WhichOneof("payload")
+            except Exception:
+                payload_name = None
+        if not payload_name and hasattr(response, "HasField"):
+            for name in ("orderbook", "subscribe_order_book_response", "ping", "last_price", "candles"):
+                if response.HasField(name):
+                    payload_name = name
+                    break
+        if not payload_name:
+            for name in ("orderbook", "subscribe_order_book_response", "ping", "last_price", "candles"):
+                if hasattr(response, name):
+                    payload_name = name
+                    break
+        return payload_name or "unknown"
 
     def _log_subscription_response(self, response) -> None:
         subscriptions = getattr(response, "order_book_subscriptions", None) or []
@@ -537,10 +561,7 @@ class TInvestGrpcStream:
         )
         if response is None:
             return None
-        orderbook = getattr(response, "orderbook", None)
-        if orderbook is None:
-            return None
-        return self._parse_orderbook(orderbook, instrument)
+        return self._parse_get_orderbook_response(response, instrument)
 
     def _parse_orderbook(self, orderbook, instrument: Instrument) -> OrderBookSnapshot | None:
         ts = self._parse_timestamp(orderbook.time)
@@ -567,6 +588,45 @@ class TInvestGrpcStream:
             bids=bids,
             asks=asks,
             nominal=instrument.nominal,
+        )
+
+    def _parse_get_orderbook_response(self, response, instrument: Instrument) -> OrderBookSnapshot | None:
+        orderbook = getattr(response, "orderbook", None) or response
+        bids = []
+        for item in getattr(orderbook, "bids", []) or []:
+            price = self._parse_quotation(getattr(item, "price", None))
+            lots = max(int(getattr(item, "quantity", 0)), 0)
+            if price and lots > 0:
+                bids.append(OrderBookLevel(price=price, lots=lots))
+
+        asks = []
+        for item in getattr(orderbook, "asks", []) or []:
+            price = self._parse_quotation(getattr(item, "price", None))
+            lots = max(int(getattr(item, "quantity", 0)), 0)
+            if price and lots > 0:
+                asks.append(OrderBookLevel(price=price, lots=lots))
+
+        if not bids and not asks:
+            return None
+
+        ts = self._parse_timestamp(getattr(response, "orderbook_ts", None))
+        if ts is None:
+            ts = self._parse_timestamp(getattr(response, "last_price_ts", None))
+        if ts is None:
+            ts = self._parse_timestamp(getattr(orderbook, "time", None))
+
+        nominal = getattr(instrument, "nominal", None)
+        if not nominal:
+            nominal = self._parse_quotation(getattr(response, "nominal", None))
+        if not nominal:
+            nominal = 1000.0
+
+        return OrderBookSnapshot(
+            isin=instrument.isin,
+            ts=ts or datetime.now(timezone.utc),
+            bids=bids,
+            asks=asks,
+            nominal=nominal,
         )
 
     def _subscription_status_name(self, status_raw) -> str:

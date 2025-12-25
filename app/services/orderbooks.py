@@ -7,6 +7,8 @@ from pathlib import Path
 import logging
 from datetime import datetime, timezone
 
+import grpc
+
 from ..domain.models import OrderBookSnapshot
 from ..domain.detector import History, detect_event
 from ..adapters.tinvest.client import TInvestClient
@@ -131,15 +133,15 @@ class OrderbookOrchestrator:
         concurrency = max(1, self.settings.orderbook_bootstrap_concurrency)
         rate_limit = self._build_rate_limiter()
         semaphore = asyncio.Semaphore(concurrency)
+        counter_lock = asyncio.Lock()
+        success_count = 0
+        error_count = 0
 
-        logger.info(
-            "Orderbook bootstrap started: instruments=%s concurrency=%s rps=%.2f",
-            len(instruments),
-            concurrency,
-            self.settings.orderbook_bootstrap_rps,
-        )
+        logger.info("bootstrap starting for %s instruments", len(instruments))
+        self.metrics.record_orderbook_bootstrap_attempt(len(instruments))
 
         async def fetch_and_ingest(inst):
+            nonlocal success_count, error_count
             async with semaphore:
                 await rate_limit()
                 try:
@@ -149,13 +151,44 @@ class OrderbookOrchestrator:
                         timeout=self.settings.orderbook_bootstrap_timeout_s,
                     )
                 except Exception as exc:
-                    logger.warning("Orderbook bootstrap failed for %s: %s", getattr(inst, "isin", None), exc)
+                    instrument_id = getattr(inst, "instrument_uid", None) or getattr(inst, "figi", None) or getattr(
+                        inst, "isin", None
+                    )
+                    reason = type(exc).__name__
+                    if isinstance(exc, grpc.aio.AioRpcError):
+                        reason = exc.code().name if exc.code() else reason
+                        logger.info(
+                            "Orderbook bootstrap error: instrument_id=%s code=%s details=%s",
+                            instrument_id,
+                            exc.code(),
+                            exc.details(),
+                        )
+                    else:
+                        logger.info(
+                            "Orderbook bootstrap error: instrument_id=%s error=%s",
+                            instrument_id,
+                            exc,
+                        )
+                    async with counter_lock:
+                        error_count += 1
+                    self.metrics.record_orderbook_bootstrap_error(reason)
                     return
                 if snapshot is None:
+                    instrument_id = getattr(inst, "instrument_uid", None) or getattr(inst, "figi", None) or getattr(
+                        inst, "isin", None
+                    )
+                    logger.info("Orderbook bootstrap empty response for %s", instrument_id)
+                    async with counter_lock:
+                        error_count += 1
+                    self.metrics.record_orderbook_bootstrap_error("empty_response")
                     return
                 await self._handle_snapshot(snapshot, instrument_map, persist=True)
+                async with counter_lock:
+                    success_count += 1
+                self.metrics.record_orderbook_bootstrap_success()
 
         await asyncio.gather(*(fetch_and_ingest(inst) for inst in instruments))
+        logger.info("bootstrap done: success=%s error=%s", success_count, error_count)
 
     async def _poll_snapshots(
         self,
