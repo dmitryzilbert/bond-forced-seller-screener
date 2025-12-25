@@ -161,57 +161,61 @@ class TInvestGrpcStream:
                     except asyncio.TimeoutError:
                         logger.warning("Timed out waiting for orderbook subscribe ACK (continuing)")
 
-                ack_validated = False
-                ack_callback_called = False
-                while True:
-                    response = await response_queue.get()
-                    if response is _STREAM_DONE:
-                        break
-                    if isinstance(response, Exception):
-                        raise response
-                    self._handle_stream_response(response)
-                    if self._response_has_subscribe_response(response) and not ack_validated:
-                        ack = response.subscribe_order_book_response
-                        ok_subs, err_subs = self._split_subscription_response(ack)
-                        self._record_subscription_metrics(ok_subs, err_subs)
-                        if len(ok_subs) == 0:
-                            raise RuntimeError("Orderbook subscription rejected")
-                        ok_instruments = self._select_instruments_from_subscriptions(
-                            current_instruments, ok_subs
-                        )
-                        if ok_instruments:
-                            instrument_map = self._build_instrument_map(ok_instruments)
-                            self._last_active_instruments = ok_instruments
-                        if err_subs:
-                            tracking_id = getattr(ack, "tracking_id", None)
-                            for item in err_subs:
-                                status_raw = getattr(item, "subscription_status", None) or getattr(
-                                    item, "status", None
+                    ack_validated = False
+                    ack_callback_called = False
+                    while True:
+                        response = await response_queue.get()
+                        if response is _STREAM_DONE:
+                            break
+                        if isinstance(response, Exception):
+                            raise response
+                        self._handle_stream_response(response)
+                        if self._response_has_subscribe_response(response) and not ack_validated:
+                            ack = response.subscribe_order_book_response
+                            ok_subs, err_subs = self._split_subscription_response(ack)
+                            self._record_subscription_metrics(ok_subs, err_subs)
+                            if len(ok_subs) == 0:
+                                raise RuntimeError("Orderbook subscription rejected")
+                            ok_instruments = self._select_instruments_from_subscriptions(
+                                current_instruments, ok_subs
+                            )
+                            if ok_instruments:
+                                instrument_map = self._build_instrument_map(ok_instruments)
+                                self._last_active_instruments = ok_instruments
+                            if err_subs:
+                                tracking_id = getattr(ack, "tracking_id", None)
+                                for item in err_subs:
+                                    status_raw = getattr(item, "subscription_status", None) or getattr(
+                                        item, "status", None
+                                    )
+                                    status_name = self._subscription_status_name(status_raw)
+                                    instrument_id = getattr(item, "instrument_id", None)
+                                    figi = getattr(item, "figi", None)
+                                    uid = getattr(item, "instrument_uid", None) or getattr(
+                                        item, "uid", None
+                                    )
+                                    logger.warning(
+                                        "Orderbook subscription rejected: tracking_id=%s status=%s "
+                                        "instrument_id=%s figi=%s uid=%s",
+                                        tracking_id,
+                                        status_name,
+                                        instrument_id,
+                                        figi,
+                                        uid,
+                                    )
+                            ack_validated = True
+                            if on_subscribed is not None and not ack_callback_called:
+                                ack_callback_called = True
+                                await self._notify_subscribed(
+                                    on_subscribed, self._last_active_instruments
                                 )
-                                status_name = self._subscription_status_name(status_raw)
-                                instrument_id = getattr(item, "instrument_id", None)
-                                figi = getattr(item, "figi", None)
-                                uid = getattr(item, "instrument_uid", None) or getattr(item, "uid", None)
-                                logger.warning(
-                                    "Orderbook subscription rejected: tracking_id=%s status=%s "
-                                    "instrument_id=%s figi=%s uid=%s",
-                                    tracking_id,
-                                    status_name,
-                                    instrument_id,
-                                    figi,
-                                    uid,
-                                )
-                        ack_validated = True
-                        if on_subscribed is not None and not ack_callback_called:
-                            ack_callback_called = True
-                            await self._notify_subscribed(on_subscribed, self._last_active_instruments)
-                        continue
-                    if not ack_validated:
-                        logger.debug("Skipping orderbook update before ACK")
-                        continue
-                    snapshot = self._parse_response(response, instrument_map)
-                    if snapshot:
-                        yield snapshot
+                            continue
+                        if not ack_validated:
+                            logger.debug("Skipping orderbook update before ACK")
+                            continue
+                        snapshot = self._parse_response(response, instrument_map)
+                        if snapshot:
+                            yield snapshot
                 finally:
                     reader_task.cancel()
                     with contextlib.suppress(asyncio.CancelledError, Exception):
