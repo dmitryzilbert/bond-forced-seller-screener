@@ -61,6 +61,18 @@ class EventService:
         def matches_payload(event: Event) -> bool:
             payload = event.payload or {}
 
+            if params.candidate is not None:
+                if payload.get("candidate") is None:
+                    return False
+                if bool(payload.get("candidate")) is not params.candidate:
+                    return False
+
+            if params.alert is not None:
+                if payload.get("alert") is None:
+                    return False
+                if bool(payload.get("alert")) is not params.alert:
+                    return False
+
             if params.eligible is not None:
                 if payload.get("eligible") is None:
                     return False
@@ -100,6 +112,8 @@ class EventFilter:
     near_maturity_flag: Optional[bool] = None
     min_notional: Optional[float] = None
     min_delta_bps: Optional[float] = None
+    candidate: Optional[bool] = None
+    alert: Optional[bool] = None
     eligible: Optional[bool] = None
     has_call_offer: Optional[bool] = None
     amortization_flag: Optional[bool] = None
