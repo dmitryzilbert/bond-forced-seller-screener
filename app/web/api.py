@@ -72,3 +72,21 @@ async def instrument_summary(isin: str):
         best_ask = best_ask or latest_payload.get("best_ask")
         ts = ts or events[0].get("ts")
     return {"events": events, "best_bid": best_bid, "best_ask": best_ask, "ts": ts}
+
+
+@api_router.get("/snapshots")
+async def snapshots(limit: int = 50):
+    limit = max(1, min(limit, 200))
+    snapshots_data = await orderbook_service.latest_snapshots(limit)
+    return [
+        {
+            "isin": snap["isin"],
+            "ts": snap["ts"].isoformat(),
+            "best_bid": snap["best_bid"],
+            "best_ask": snap["best_ask"],
+            "mid": snap["mid"],
+            "bids": snap["bids"],
+            "asks": snap["asks"],
+        }
+        for snap in snapshots_data
+    ]

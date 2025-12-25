@@ -79,6 +79,7 @@ class Settings(BaseSettings):
     liveness_alert_minutes: int = Field(5, alias="LIVENESS_ALERT_MINUTES")
     liveness_alert_cooldown_minutes: int = Field(30, alias="LIVENESS_ALERT_COOLDOWN_MINUTES")
     tinvest_ping_delay_ms: int = Field(30000, alias="TINVEST_PING_DELAY_MS")
+    price_max_age_s: int = Field(24 * 60 * 60, alias="PRICE_MAX_AGE_S")
 
 
 def get_settings() -> Settings:
