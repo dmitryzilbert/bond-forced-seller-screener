@@ -93,7 +93,11 @@ class ReplayService:
             return None
 
         best_ask = entry.asks[0]
-        per_lot_notional = best_ask.price * entry.nominal / 100
+        nominal = entry.nominal or exit_snapshot.nominal
+        if nominal is None:
+            payload = event.payload or {}
+            nominal = float(payload.get("nominal", 1000.0))
+        per_lot_notional = best_ask.price * nominal / 100
 
         price = best_ask.price
         if mode == "buffer":
@@ -111,7 +115,7 @@ class ReplayService:
         if exit_price is None:
             return None
 
-        pnl = (exit_price - price) * entry.nominal / 100 * lots
+        pnl = (exit_price - price) * nominal / 100 * lots
         return {
             "isin": event.isin,
             "entry_ts": entry.ts,

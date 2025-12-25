@@ -171,22 +171,29 @@ class OrderbookOrchestrator:
                     self.metrics.record_snapshot_dropped("missing_isin")
                     return
                 try:
-                    response = await self.client.fetch_orderbook_response(
-                        inst,
-                        depth=self.settings.orderbook_depth,
-                        timeout=self.settings.orderbook_bootstrap_timeout_s,
-                    )
-                    if response is None:
-                        logger.info("Orderbook bootstrap empty response for %s", instrument_id)
-                        self.metrics.record_orderbook_bootstrap_error("empty_response")
+                    if hasattr(self.client, "fetch_orderbook_snapshot"):
+                        snapshot = await self.client.fetch_orderbook_snapshot(
+                            inst,
+                            depth=self.settings.orderbook_depth,
+                            timeout=self.settings.orderbook_bootstrap_timeout_s,
+                        )
+                    else:
+                        response = await self.client.fetch_orderbook_response(
+                            inst,
+                            depth=self.settings.orderbook_depth,
+                            timeout=self.settings.orderbook_bootstrap_timeout_s,
+                        )
+                        if response is None:
+                            logger.info("Orderbook bootstrap empty response for %s", instrument_id)
+                            self.metrics.record_orderbook_bootstrap_error("empty_response")
+                            return
+                        snapshot = self.client.build_orderbook_snapshot(response, inst)
+                    if snapshot is None:
+                        self.metrics.record_orderbook_bootstrap_error("empty_snapshot")
                         return
                     async with counter_lock:
                         fetch_ok_count += 1
                     self.metrics.record_orderbook_bootstrap_fetch_ok()
-                    snapshot = self.client.build_orderbook_snapshot(response, inst)
-                    if snapshot is None:
-                        self.metrics.record_orderbook_bootstrap_error("empty_snapshot")
-                        return
                     try:
                         await self._persist_snapshot(snapshot)
                     except Exception as exc:
