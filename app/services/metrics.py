@@ -33,6 +33,9 @@ class Metrics:
         self.orderbook_bootstrap_persist_error_total: dict[str, int] = {}
         self.orderbook_bootstrap_error_total: dict[str, int] = {}
         self.snapshot_dropped_total: dict[str, int] = {}
+        self.universe_price_enrich_attempt_total = 0
+        self.universe_price_enrich_success_total = 0
+        self.universe_price_enrich_error_total: dict[str, int] = {}
         self.last_update_ts: datetime | None = now
         self.last_stream_message_ts: datetime | None = now
         self.last_worker_heartbeat_ts: datetime | None = now
@@ -151,6 +154,21 @@ class Metrics:
             reason = "unknown"
         self.snapshot_dropped_total[reason] = self.snapshot_dropped_total.get(reason, 0) + count
 
+    def record_universe_price_enrich_attempt(self, count: int = 1) -> None:
+        self.universe_price_enrich_attempt_total += max(count, 0)
+
+    def record_universe_price_enrich_success(self, count: int = 1) -> None:
+        self.universe_price_enrich_success_total += max(count, 0)
+
+    def record_universe_price_enrich_error(self, reason: str, count: int = 1) -> None:
+        if count <= 0:
+            return
+        if not reason:
+            reason = "unknown"
+        self.universe_price_enrich_error_total[reason] = (
+            self.universe_price_enrich_error_total.get(reason, 0) + count
+        )
+
     def should_send_liveness_alert(self, *, now: datetime, cooldown_minutes: int, threshold_minutes: int) -> bool:
         if self.last_update_ts is None:
             return False
@@ -189,6 +207,8 @@ class Metrics:
             f"orderbook_bootstrap_success_total {self.orderbook_bootstrap_success_total}",
             f"orderbook_bootstrap_fetch_ok_total {self.orderbook_bootstrap_fetch_ok_total}",
             f"orderbook_bootstrap_persist_ok_total {self.orderbook_bootstrap_persist_ok_total}",
+            f"universe_price_enrich_attempt_total {self.universe_price_enrich_attempt_total}",
+            f"universe_price_enrich_success_total {self.universe_price_enrich_success_total}",
         ]
         for payload_name, count in sorted(self.stream_payload_total.items()):
             lines.append(f'stream_payload_total{{payload="{payload_name}"}} {count}')
@@ -206,6 +226,8 @@ class Metrics:
             lines.append(f'orderbook_bootstrap_persist_error_total{{exc="{exc_name}"}} {count}')
         for reason, count in sorted(self.snapshot_dropped_total.items()):
             lines.append(f'snapshot_dropped_total{{reason="{reason}"}} {count}')
+        for reason, count in sorted(self.universe_price_enrich_error_total.items()):
+            lines.append(f'universe_price_enrich_error_total{{reason="{reason}"}} {count}')
         return "\n".join(lines) + "\n"
 
 

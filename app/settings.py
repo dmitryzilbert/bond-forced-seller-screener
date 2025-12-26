@@ -40,6 +40,20 @@ class Settings(BaseSettings):
     orderbook_bootstrap_rps: float = Field(10.0, alias="ORDERBOOK_BOOTSTRAP_RPS")
     orderbook_poll_enabled: bool = Field(False, alias="ORDERBOOK_POLL_ENABLED")
     orderbook_poll_interval_s: int = Field(60, alias="ORDERBOOK_POLL_INTERVAL_S")
+    universe_enrich_prices_on_rebuild: bool = Field(
+        False,
+        alias="UNIVERSE_ENRICH_PRICES_ON_REBUILD",
+    )
+    universe_enrich_prices_limit: int = Field(200, alias="UNIVERSE_ENRICH_PRICES_LIMIT")
+    universe_enrich_prices_concurrency: int = Field(
+        8,
+        alias="UNIVERSE_ENRICH_PRICES_CONCURRENCY",
+    )
+    universe_enrich_prices_rps: float = Field(10.0, alias="UNIVERSE_ENRICH_PRICES_RPS")
+    universe_enrich_prices_timeout_s: float = Field(
+        8.0,
+        alias="UNIVERSE_ENRICH_PRICES_TIMEOUT_S",
+    )
     shortlist_max: int = Field(500, alias="SHORTLIST_MAX")
     shortlist_min_notional: int = Field(200_000, alias="SHORTLIST_MIN_NOTIONAL")
     shortlist_min_updates_per_hour: int = Field(2, alias="SHORTLIST_MIN_UPDATES_PER_HOUR")

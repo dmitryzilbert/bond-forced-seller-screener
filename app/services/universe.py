@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from dataclasses import dataclass, field
@@ -10,6 +11,7 @@ from typing import List
 from ..adapters.tinvest.client import TInvestClient
 from ..adapters.tinvest.mapping import map_orderbook_payload
 from ..domain.models import Instrument, OrderBookSnapshot
+from ..services.pricing import price_from_snapshot
 from ..settings import Settings
 from ..storage.db import async_session_factory
 from ..storage.repo import InstrumentRepository, SnapshotRepository
@@ -33,6 +35,7 @@ class ShortlistSummary:
     missing_reasons: dict[str, int] = field(default_factory=dict)
     missing_examples: list[dict] = field(default_factory=list)
     failed_bond_events: int = 0
+    price_enriched: int = 0
 
 
 class UniverseService:
@@ -115,7 +118,13 @@ class UniverseService:
                 continue
             shortlist_candidates.append(inst)
 
-        shortlisted, shortlist_reasons, missing_reasons, missing_examples = await self._apply_shortlist(shortlist_candidates)
+        (
+            shortlisted,
+            shortlist_reasons,
+            missing_reasons,
+            missing_examples,
+            price_enriched,
+        ) = await self._apply_shortlist(shortlist_candidates)
         for key, value in shortlist_reasons.items():
             exclusion_reasons[key] = exclusion_reasons.get(key, 0) + value
 
@@ -128,6 +137,7 @@ class UniverseService:
             missing_reasons=missing_reasons,
             missing_examples=missing_examples,
             failed_bond_events=self.failed_bond_events,
+            price_enriched=price_enriched,
         )
 
     async def _apply_eligibility(self, instruments: list[Instrument]) -> list[Instrument]:
@@ -190,6 +200,7 @@ class UniverseService:
         missing_examples: list[dict] = []
         now = datetime.utcnow()
         max_age = timedelta(seconds=self.settings.price_max_age_s)
+        price_enriched = 0
 
         def track_exclusion(reason: str):
             exclusion_reasons[reason] = exclusion_reasons.get(reason, 0) + 1
@@ -212,6 +223,17 @@ class UniverseService:
             notional = metrics.max_notional if metrics else 0.0
             enrichment_rank = 1 if not inst.needs_enrichment else 0
             return (enrichment_rank, updates, notional)
+
+        missing_price_isins = [
+            inst.isin
+            for inst in eligible
+            if self._snapshot_missing_price(latest_snapshots.get(inst.isin), now=now, max_age=max_age)
+        ]
+        if missing_price_isins and self.settings.universe_enrich_prices_on_rebuild:
+            price_enriched, enriched_snapshots = await self._enrich_prices(
+                [inst for inst in eligible if inst.isin in missing_price_isins]
+            )
+            latest_snapshots.update(enriched_snapshots)
 
         filtered: list[Instrument] = []
         for inst in eligible:
@@ -261,7 +283,7 @@ class UniverseService:
         )
 
         self.instruments = shortlisted
-        return shortlisted, exclusion_reasons, missing_reasons, missing_examples
+        return shortlisted, exclusion_reasons, missing_reasons, missing_examples, price_enriched
 
     async def _collect_liveness_metrics(self) -> tuple[dict[str, LivenessMetrics], dict[str, OrderBookSnapshot]]:
         snapshots = await self._load_orderbook_snapshots()
@@ -334,15 +356,7 @@ class UniverseService:
         return max(candidates) if candidates else 0.0
 
     def _snapshot_price(self, snap: OrderBookSnapshot) -> float | None:
-        best_bid = snap.best_bid
-        best_ask = snap.best_ask
-        if best_bid is not None and best_ask is not None:
-            return (best_bid + best_ask) / 2
-        if best_bid is not None:
-            return best_bid
-        if best_ask is not None:
-            return best_ask
-        return None
+        return price_from_snapshot(snap)["mid"]
 
     def _snapshot_missing_price(
         self,
@@ -361,6 +375,96 @@ class UniverseService:
         if now - snapshot_ts > max_age:
             return True
         return self._snapshot_price(snapshot) is None
+
+    async def _enrich_prices(
+        self,
+        instruments: list[Instrument],
+    ) -> tuple[int, dict[str, OrderBookSnapshot]]:
+        limit = max(0, self.settings.universe_enrich_prices_limit)
+        if limit == 0:
+            return 0, {}
+        candidates = [inst for inst in instruments if inst.isin][:limit]
+        if not candidates:
+            return 0, {}
+
+        concurrency = self.settings.universe_enrich_prices_concurrency
+        if concurrency <= 0:
+            concurrency = self.settings.orderbook_bootstrap_concurrency
+        concurrency = max(1, concurrency)
+
+        rps = self.settings.universe_enrich_prices_rps
+        if rps <= 0:
+            rps = self.settings.orderbook_bootstrap_rps
+        rate_limit = self._build_rate_limiter(rps=rps)
+
+        timeout_s = self.settings.universe_enrich_prices_timeout_s
+        if timeout_s <= 0:
+            timeout_s = self.settings.orderbook_bootstrap_timeout_s
+
+        semaphore = asyncio.Semaphore(concurrency)
+        counter_lock = asyncio.Lock()
+        price_enriched = 0
+        snapshots: dict[str, OrderBookSnapshot] = {}
+        metrics = get_metrics()
+
+        async def fetch_and_persist(inst: Instrument) -> None:
+            nonlocal price_enriched
+            async with semaphore:
+                await rate_limit()
+                metrics.record_universe_price_enrich_attempt()
+                try:
+                    snapshot = await self.client.fetch_orderbook_snapshot(
+                        inst,
+                        depth=1,
+                        timeout=timeout_s,
+                    )
+                    if snapshot is None:
+                        metrics.record_universe_price_enrich_error("empty_snapshot")
+                        return
+                    snapshot.isin = inst.isin
+                    await self._persist_snapshot(snapshot)
+                    async with counter_lock:
+                        snapshots[inst.isin] = snapshot
+                        price_enriched += 1
+                    metrics.record_universe_price_enrich_success()
+                except Exception as exc:
+                    reason = type(exc).__name__ or "unknown"
+                    metrics.record_universe_price_enrich_error(reason)
+
+        await asyncio.gather(*(fetch_and_persist(inst) for inst in candidates))
+        return price_enriched, snapshots
+
+    def _build_rate_limiter(self, *, rps: float):
+        rate = max(rps, 0.1)
+        min_interval = 1.0 / rate
+        rate_lock = asyncio.Lock()
+        last_sent = {"ts": 0.0}
+
+        async def rate_limit():
+            async with rate_lock:
+                now = asyncio.get_running_loop().time()
+                sleep_for = min_interval - (now - last_sent["ts"])
+                if sleep_for > 0:
+                    await asyncio.sleep(sleep_for)
+                last_sent["ts"] = asyncio.get_running_loop().time()
+
+        return rate_limit
+
+    async def _persist_snapshot(self, snapshot: OrderBookSnapshot) -> None:
+        from ..storage.schema import OrderbookSnapshotORM
+
+        async with self.session_factory() as session:
+            repo = SnapshotRepository(session)
+            orm = OrderbookSnapshotORM(
+                isin=snapshot.isin,
+                ts=snapshot.ts,
+                bids_json=[level.model_dump() for level in snapshot.bids],
+                asks_json=[level.model_dump() for level in snapshot.asks],
+                best_bid=snapshot.best_bid,
+                best_ask=snapshot.best_ask,
+                nominal=snapshot.nominal,
+            )
+            await repo.add_snapshot(orm)
 
     async def _resolve_call_offer(self, instrument: Instrument, cached=None) -> bool | None:
         if self._should_use_cache(cached, instrument):
