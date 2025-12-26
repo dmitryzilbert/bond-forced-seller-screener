@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import logging
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
+from fastapi.encoders import jsonable_encoder
 from typing import Optional
 from ..services.events import EventService, EventFilter
+from ..services.instrument_summary import InstrumentSummaryService
 from ..services.orderbooks import OrderbookService
 from ..settings import get_settings
 
@@ -11,6 +13,7 @@ api_router = APIRouter()
 settings = get_settings()
 event_service = EventService(settings)
 orderbook_service = OrderbookService(settings)
+instrument_summary_service = InstrumentSummaryService(settings)
 logger = logging.getLogger(__name__)
 
 
@@ -60,18 +63,17 @@ async def events(
 
 @api_router.get("/instrument/{isin}")
 async def instrument_summary(isin: str):
-    params = EventFilter(hours=24 * 7, limit=100, sort_by="ts", order="desc", isin=isin, eligible=None)
-    events = [e.model_dump() for e in await event_service.filtered_events(params)]
-    snapshot = await orderbook_service.latest_snapshot(isin)
-    best_bid = snapshot.best_bid if snapshot else None
-    best_ask = snapshot.best_ask if snapshot else None
-    ts = snapshot.ts.isoformat() if snapshot else None
-    if not snapshot and events:
-        latest_payload = events[0].get("payload") or {}
-        best_bid = best_bid or latest_payload.get("best_bid")
-        best_ask = best_ask or latest_payload.get("best_ask")
-        ts = ts or events[0].get("ts")
-    return {"events": events, "best_bid": best_bid, "best_ask": best_ask, "ts": ts}
+    summary = await instrument_summary_service.get_summary(isin)
+    return jsonable_encoder(summary)
+
+
+@api_router.post("/instrument/{isin}/refresh")
+async def instrument_refresh(isin: str):
+    try:
+        summary = await instrument_summary_service.refresh_snapshot(isin, depth=10)
+    except ValueError:
+        raise HTTPException(status_code=404, detail="instrument_not_found")
+    return jsonable_encoder(summary)
 
 
 @api_router.get("/snapshots")

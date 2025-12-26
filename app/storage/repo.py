@@ -146,6 +146,12 @@ class InstrumentRepository:
         rows = (await self.session.execute(stmt)).scalars().all()
         return {row.isin: row for row in rows}
 
+    async def get_by_isin(self, isin: str) -> Instrument | None:
+        row = await self.session.get(InstrumentORM, isin)
+        if row is None:
+            return None
+        return self._to_model(row)
+
     async def set_shortlist(self, shortlisted_isins: set[str]):
         stmt_true = update(InstrumentORM).values(is_shortlisted=False)
         await self.session.execute(stmt_true)
@@ -193,6 +199,13 @@ class SnapshotRepository:
         stmt = select(OrderbookSnapshotORM).where(OrderbookSnapshotORM.isin == isin).order_by(desc(OrderbookSnapshotORM.ts)).limit(limit)
         rows = (await self.session.execute(stmt)).scalars().all()
         return rows
+
+    async def count_since(self, isin: str, since: datetime.datetime) -> int:
+        stmt = select(func.count(OrderbookSnapshotORM.id)).where(
+            OrderbookSnapshotORM.isin == isin,
+            OrderbookSnapshotORM.ts >= since,
+        )
+        return int((await self.session.execute(stmt)).scalar() or 0)
 
     async def latest(self, isin: str) -> OrderBookSnapshot | None:
         stmt = (

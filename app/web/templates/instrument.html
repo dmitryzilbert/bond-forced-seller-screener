@@ -6,7 +6,11 @@
     <p class="status">Последние события за 7 дней</p>
     <div class="metric">Best bid: <strong id="bestBid">{{"%.2f"|format(best_bid) if best_bid is not none else "—"}}</strong></div>
     <div class="metric">Best ask: <strong id="bestAsk">{{"%.2f"|format(best_ask) if best_ask is not none else "—"}}</strong></div>
+    <div class="metric">Mid: <strong id="midPrice">—</strong></div>
+    <div class="metric">YTM mid: <strong id="ytmMid">—</strong></div>
     <div class="metric">Обновлено: <strong id="bookTs">{{book_ts or "—"}}</strong></div>
+    <div class="metric">Диагностика: <strong id="diagReason">—</strong></div>
+    <div class="metric">Снэпшоты за 1ч: <strong id="diagSnapshots">—</strong></div>
     <button id="reload" class="primary" style="margin-top:10px;">Обновить</button>
   </div>
   <div class="card">
@@ -55,8 +59,8 @@
 
 <script>
   const initialEvents = {{ events | tojson }};
+  const initialSummary = {{ summary | tojson }};
   const isin = "{{isin}}";
-  const book = { bid: {{ best_bid if best_bid is not none else 'null' }}, ask: {{ best_ask if best_ask is not none else 'null' }}, ts: {{ ('"' ~ book_ts ~ '"') if book_ts else 'null' }} };
 
   const state = { stress: 'any', minNotional: '', minDelta: '' };
 
@@ -64,19 +68,42 @@
   const bidEl = document.getElementById('bestBid');
   const askEl = document.getElementById('bestAsk');
   const tsEl = document.getElementById('bookTs');
+  const midEl = document.getElementById('midPrice');
+  const ytmEl = document.getElementById('ytmMid');
+  const diagReasonEl = document.getElementById('diagReason');
+  const diagSnapshotsEl = document.getElementById('diagSnapshots');
+  let currentSummary = initialSummary;
 
   function formatNumber(num, digits = 2) {
     return typeof num === 'number' ? num.toFixed(digits) : '—';
   }
 
-  function renderOrderbook(snapshot) {
-    bidEl.textContent = snapshot.bid !== null && snapshot.bid !== undefined ? formatNumber(snapshot.bid) : '—';
-    askEl.textContent = snapshot.ask !== null && snapshot.ask !== undefined ? formatNumber(snapshot.ask) : '—';
+  function renderOrderbook(summary) {
+    const snapshot = summary.latest_snapshot || {};
+    bidEl.textContent = snapshot.best_bid !== null && snapshot.best_bid !== undefined ? formatNumber(snapshot.best_bid) : '—';
+    askEl.textContent = snapshot.best_ask !== null && snapshot.best_ask !== undefined ? formatNumber(snapshot.best_ask) : '—';
+    midEl.textContent = snapshot.mid !== null && snapshot.mid !== undefined ? formatNumber(snapshot.mid) : '—';
+    ytmEl.textContent = summary.ytm_mid !== null && summary.ytm_mid !== undefined ? formatNumber(summary.ytm_mid, 4) : '—';
     tsEl.textContent = snapshot.ts || '—';
+    const diagnostics = summary.diagnostics || {};
+    diagReasonEl.textContent = diagnostics.reason_event_unavailable || '—';
+    diagSnapshotsEl.textContent = diagnostics.snapshots_last_1h_count !== undefined ? diagnostics.snapshots_last_1h_count : '—';
   }
 
-  function renderEvents(events) {
+  function renderEvents(events, summary) {
     bodyEl.innerHTML = '';
+    if (!events.length) {
+      const diagnostics = summary.diagnostics || {};
+      const reason = diagnostics.reason_event_unavailable || 'unknown';
+      const nominalMissing = diagnostics.nominal_missing ? 'nominal missing' : null;
+      const details = [reason, nominalMissing].filter(Boolean).join(', ');
+      const row = document.createElement('tr');
+      row.innerHTML = `
+        <td class="muted" colspan="8">Нет событий. Причина: ${details || '—'}</td>
+      `;
+      bodyEl.appendChild(row);
+      return;
+    }
     events.forEach(e => {
       const payload = e.payload || {};
       const row = document.createElement('tr');
@@ -113,17 +140,28 @@
 
     const eventsData = await eventsResp.json();
     const instrumentData = await instrumentResp.json();
-    renderEvents(eventsData);
-    renderOrderbook({ bid: instrumentData.best_bid, ask: instrumentData.best_ask, ts: instrumentData.ts });
+    currentSummary = instrumentData;
+    renderEvents(eventsData, instrumentData);
+    renderOrderbook(instrumentData);
+  }
+
+  async function refreshSnapshot() {
+    const resp = await fetch(`/api/instrument/${isin}/refresh`, { method: 'POST' });
+    if (!resp.ok) {
+      return;
+    }
+    const instrumentData = await resp.json();
+    currentSummary = instrumentData;
+    renderOrderbook(instrumentData);
   }
 
   document.getElementById('stressFilter').addEventListener('change', (e) => state.stress = e.target.value);
   document.getElementById('minNotional').addEventListener('input', (e) => state.minNotional = e.target.value);
   document.getElementById('minDelta').addEventListener('input', (e) => state.minDelta = e.target.value);
   document.getElementById('applyFilters').addEventListener('click', reloadData);
-  document.getElementById('reload').addEventListener('click', reloadData);
+  document.getElementById('reload').addEventListener('click', refreshSnapshot);
 
-  renderEvents(initialEvents);
-  renderOrderbook(book);
+  renderEvents(initialEvents, initialSummary);
+  renderOrderbook(initialSummary);
 </script>
 {% endblock %}

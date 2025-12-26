@@ -68,6 +68,8 @@ async def _shortlist_rebuild():
     typer.echo(
         f"Universe: {summary.universe_size}, eligible: {summary.eligible_size}, shortlisted: {summary.shortlisted_size}"
     )
+    if getattr(summary, "price_enriched", 0):
+        typer.echo(f"Prices enriched: {summary.price_enriched}")
     typer.echo(f"Bond events failures: {getattr(summary, 'failed_bond_events', 0)}")
     top_reasons = sorted(summary.exclusion_reasons.items(), key=lambda item: item[1], reverse=True)[:3]
     if top_reasons:

@@ -6,14 +6,14 @@ from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
 
 from ..services.events import EventService, EventFilter
-from ..services.orderbooks import OrderbookService
+from ..services.instrument_summary import InstrumentSummaryService
 from ..settings import get_settings
 
 templates = Jinja2Templates(directory="app/web/templates")
 view_router = APIRouter()
 settings = get_settings()
 event_service = EventService(settings)
-orderbook_service = OrderbookService(settings)
+instrument_summary_service = InstrumentSummaryService(settings)
 
 
 @view_router.get("/", response_class=HTMLResponse)
@@ -31,9 +31,11 @@ async def instrument_page(request: Request, isin: str):
         EventFilter(hours=24 * 7, limit=100, sort_by="ts", order="desc", isin=isin, eligible=None)
     )
     events_json = jsonable_encoder(events)
-    snapshot = await orderbook_service.latest_snapshot(isin)
-    best_bid = snapshot.best_bid if snapshot else None
-    best_ask = snapshot.best_ask if snapshot else None
+    summary = await instrument_summary_service.get_summary(isin)
+    summary_json = jsonable_encoder(summary)
+    snapshot = summary.get("latest_snapshot")
+    best_bid = snapshot.get("best_bid") if snapshot else None
+    best_ask = snapshot.get("best_ask") if snapshot else None
     return templates.TemplateResponse(
         "instrument.html",
         {
@@ -42,6 +44,7 @@ async def instrument_page(request: Request, isin: str):
             "isin": isin,
             "best_bid": best_bid,
             "best_ask": best_ask,
-            "book_ts": snapshot.ts.isoformat() if snapshot else None,
+            "book_ts": snapshot.get("ts") if snapshot else None,
+            "summary": summary_json,
         },
     )
