@@ -55,9 +55,38 @@ class TInvestRestClient:
                     "maturity_date": self._parse_datetime(item.get("maturityDate")),
                     "segment": item.get("sector"),
                     "amortization_flag": item.get("amortizationFlag"),
+                    "floating_coupon_flag": item.get("floatingCouponFlag"),
+                    "coupon_type": item.get("couponType"),
                 }
             )
         return [i for i in instruments if i.get("isin") and i.get("maturity_date")]
+
+    async def find_instrument(
+        self,
+        *,
+        query: str,
+        instrument_kind: str = "BOND",
+        timeout: float | None = None,
+    ) -> dict[str, Any] | None:
+        if not self.enabled:
+            return None
+        url = "/rest/tinkoff.public.invest.api.contract.v1.InstrumentsService/FindInstrument"
+        payload = {
+            "query": query,
+            "instrumentKind": instrument_kind,
+        }
+        resp = await self._client.post(
+            url,
+            headers=self._headers,
+            json=payload,
+            timeout=timeout,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        instruments = data.get("instruments") or data.get("instrumentsList") or []
+        if not instruments:
+            return None
+        return instruments[0]
 
     async def get_bond_events(
         self,

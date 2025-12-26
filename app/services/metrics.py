@@ -10,6 +10,7 @@ class Metrics:
         self.events_candidate_total = 0
         self.events_alert_total = 0
         self.events_saved_total = 0
+        self.events_dedup_skipped_total = 0
         self.events_save_error_total: dict[str, int] = {}
         self.tg_sent_total = 0
         self.stream_messages_total = 0
@@ -36,6 +37,9 @@ class Metrics:
         self.universe_price_enrich_attempt_total = 0
         self.universe_price_enrich_success_total = 0
         self.universe_price_enrich_error_total: dict[str, int] = {}
+        self.universe_id_enrich_attempt_total = 0
+        self.universe_id_enrich_success_total = 0
+        self.universe_id_enrich_error_total: dict[str, int] = {}
         self.last_update_ts: datetime | None = now
         self.last_stream_message_ts: datetime | None = now
         self.last_worker_heartbeat_ts: datetime | None = now
@@ -53,6 +57,9 @@ class Metrics:
 
     def record_event_saved(self) -> None:
         self.events_saved_total += 1
+
+    def record_event_dedup_skipped(self) -> None:
+        self.events_dedup_skipped_total += 1
 
     def record_event_save_error(self, exc_name: str) -> None:
         if not exc_name:
@@ -169,6 +176,21 @@ class Metrics:
             self.universe_price_enrich_error_total.get(reason, 0) + count
         )
 
+    def record_universe_id_enrich_attempt(self, count: int = 1) -> None:
+        self.universe_id_enrich_attempt_total += max(count, 0)
+
+    def record_universe_id_enrich_success(self, count: int = 1) -> None:
+        self.universe_id_enrich_success_total += max(count, 0)
+
+    def record_universe_id_enrich_error(self, reason: str, count: int = 1) -> None:
+        if count <= 0:
+            return
+        if not reason:
+            reason = "unknown"
+        self.universe_id_enrich_error_total[reason] = (
+            self.universe_id_enrich_error_total.get(reason, 0) + count
+        )
+
     def should_send_liveness_alert(self, *, now: datetime, cooldown_minutes: int, threshold_minutes: int) -> bool:
         if self.last_update_ts is None:
             return False
@@ -188,6 +210,7 @@ class Metrics:
             f"events_candidate_total {self.events_candidate_total}",
             f"events_alert_total {self.events_alert_total}",
             f"events_saved_total {self.events_saved_total}",
+            f"events_dedup_skipped_total {self.events_dedup_skipped_total}",
             f"tg_sent_total {self.tg_sent_total}",
             f"stream_messages_total {self.stream_messages_total}",
             f"stream_pings_total {self.stream_pings_total}",
@@ -209,6 +232,8 @@ class Metrics:
             f"orderbook_bootstrap_persist_ok_total {self.orderbook_bootstrap_persist_ok_total}",
             f"universe_price_enrich_attempt_total {self.universe_price_enrich_attempt_total}",
             f"universe_price_enrich_success_total {self.universe_price_enrich_success_total}",
+            f"universe_id_enrich_attempt_total {self.universe_id_enrich_attempt_total}",
+            f"universe_id_enrich_success_total {self.universe_id_enrich_success_total}",
         ]
         for payload_name, count in sorted(self.stream_payload_total.items()):
             lines.append(f'stream_payload_total{{payload="{payload_name}"}} {count}')
@@ -228,6 +253,8 @@ class Metrics:
             lines.append(f'snapshot_dropped_total{{reason="{reason}"}} {count}')
         for reason, count in sorted(self.universe_price_enrich_error_total.items()):
             lines.append(f'universe_price_enrich_error_total{{reason="{reason}"}} {count}')
+        for reason, count in sorted(self.universe_id_enrich_error_total.items()):
+            lines.append(f'universe_id_enrich_error_total{{reason="{reason}"}} {count}')
         return "\n".join(lines) + "\n"
 
 

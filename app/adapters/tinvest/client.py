@@ -61,6 +61,37 @@ class TInvestClient:
         payloads = await self.rest.list_bonds()
         return [map_instrument_payload(p) for p in payloads]
 
+    async def find_instrument(
+        self,
+        *,
+        query: str,
+        instrument_kind: str = "BOND",
+        timeout: float | None = None,
+    ) -> dict[str, str | bool | None] | None:
+        if not self.rest.enabled:
+            return None
+        payload = await self.rest.find_instrument(
+            query=query,
+            instrument_kind=instrument_kind,
+            timeout=timeout,
+        )
+        if not payload:
+            return None
+        coupon_type = payload.get("couponType") or payload.get("coupon_type")
+        floating_flag = payload.get("floatingCouponFlag") or payload.get("floating_coupon_flag")
+        if isinstance(coupon_type, str) and floating_flag is None:
+            if coupon_type.strip().upper() in {"FLOAT", "FLOATING", "VARIABLE"}:
+                floating_flag = True
+            elif coupon_type.strip().upper() in {"FIXED", "CONSTANT"}:
+                floating_flag = False
+        return {
+            "instrument_uid": payload.get("instrumentUid") or payload.get("uid"),
+            "figi": payload.get("figi"),
+            "ticker": payload.get("ticker"),
+            "class_code": payload.get("classCode") or payload.get("class_code"),
+            "floating_coupon_flag": floating_flag,
+        }
+
     async def has_future_call_offer(self, instrument: Instrument) -> bool | None:
         if not self.rest.enabled:
             return None

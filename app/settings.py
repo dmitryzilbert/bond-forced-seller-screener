@@ -54,11 +54,22 @@ class Settings(BaseSettings):
         8.0,
         alias="UNIVERSE_ENRICH_PRICES_TIMEOUT_S",
     )
+    universe_enrich_ids_on_rebuild: bool = Field(
+        True,
+        alias="UNIVERSE_ENRICH_IDS_ON_REBUILD",
+    )
+    universe_enrich_ids_limit: int = Field(500, alias="UNIVERSE_ENRICH_IDS_LIMIT")
+    universe_enrich_ids_timeout_s: float = Field(5.0, alias="UNIVERSE_ENRICH_IDS_TIMEOUT_S")
+    universe_enrich_ids_rps: float = Field(10.0, alias="UNIVERSE_ENRICH_IDS_RPS")
+    universe_enrich_ids_concurrency: int = Field(10, alias="UNIVERSE_ENRICH_IDS_CONCURRENCY")
     shortlist_max: int = Field(500, alias="SHORTLIST_MAX")
     shortlist_min_notional: int = Field(200_000, alias="SHORTLIST_MIN_NOTIONAL")
     shortlist_min_updates_per_hour: int = Field(2, alias="SHORTLIST_MIN_UPDATES_PER_HOUR")
     allow_missing_data_to_shortlist: bool = Field(False, alias="ALLOW_MISSING_DATA_TO_SHORTLIST")
     suppress_alerts_when_missing_data: bool = Field(True, alias="SUPPRESS_ALERTS_WHEN_MISSING_DATA")
+    save_candidate_events: bool = Field(True, alias="SAVE_CANDIDATE_EVENTS")
+    exclude_non_ru_isin: bool = Field(True, alias="EXCLUDE_NON_RU_ISIN")
+    exclude_floating_coupon: bool = Field(True, alias="EXCLUDE_FLOATING_COUPON")
     exclude_call_offer_unknown: bool = Field(True, alias="EXCLUDE_CALL_OFFER_UNKNOWN")
     suppress_alerts_when_offer_unknown: bool = Field(True, alias="SUPPRESS_ALERTS_WHEN_OFFER_UNKNOWN")
 

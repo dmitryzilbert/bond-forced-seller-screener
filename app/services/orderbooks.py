@@ -411,7 +411,12 @@ class OrderbookOrchestrator:
 
         self.metrics.record_candidate()
 
-        if getattr(event, "candidate", False):
+        should_save_event = (
+            persist
+            and self.settings.save_candidate_events
+            and (getattr(event, "candidate", False) or getattr(event, "alert", False))
+        )
+        if should_save_event:
             await self.events.save_event(event, persist=persist)
 
         if event.alert:
