@@ -17,6 +17,7 @@ class Instrument(BaseModel):
     maturity_date: date
     segment: str | None = None
     amortization_flag: bool | None = None
+    floating_coupon_flag: bool | None = None
     has_call_offer: bool | None = None
     eligible: bool = False
     eligible_reason: str | None = None

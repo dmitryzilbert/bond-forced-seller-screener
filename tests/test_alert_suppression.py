@@ -34,7 +34,7 @@ def test_alert_suppressed_for_missing_data(monkeypatch):
         eligible_reason="ok",
         is_shortlisted=True,
         needs_enrichment=True,
-        missing_reasons=["missing_price"],
+        missing_reasons=["missing_price_no_snapshot"],
     )
 
     event = DetectionResult(
@@ -63,5 +63,5 @@ def test_alert_suppressed_for_missing_data(monkeypatch):
 
     asyncio.run(orchestrator._handle_snapshot(snapshot, {instrument.isin: instrument}, persist=False))
 
-    orchestrator.events.save_event.assert_awaited()
+    orchestrator.events.save_event.assert_not_called()
     orchestrator.telegram.send_event.assert_not_called()

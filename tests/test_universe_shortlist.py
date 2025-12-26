@@ -20,6 +20,7 @@ from app.storage import db as db_module
 def universe(monkeypatch, tmp_path):
     monkeypatch.setenv("DATABASE_URL", f"sqlite+aiosqlite:///{tmp_path}/test.db")
     monkeypatch.setenv("APP_ENV", "mock")
+    monkeypatch.setenv("EXCLUDE_NON_RU_ISIN", "false")
     db_module._engine = None
     db_module._session_factory = None
     asyncio.run(db_module.init_db())
@@ -36,6 +37,7 @@ def universe_factory(monkeypatch, tmp_path):
         db_path = tmp_path / f"test_{len(list(tmp_path.iterdir()))}.db"
         monkeypatch.setenv("DATABASE_URL", f"sqlite+aiosqlite:///{db_path}")
         monkeypatch.setenv("APP_ENV", "mock")
+        monkeypatch.setenv("EXCLUDE_NON_RU_ISIN", "false")
         for key, value in env.items():
             monkeypatch.setenv(key, str(value))
         if hasattr(get_settings, "cache_clear"):
@@ -190,7 +192,7 @@ def test_shortlist_missing_modes(universe_factory, monkeypatch):
     summary_default = asyncio.run(universe_default.rebuild_shortlist())
     assert summary_default.shortlisted_size == 0
     assert summary_default.exclusion_reasons.get("missing_data") == 1
-    assert summary_default.missing_reasons.get("missing_price") == 1
+    assert summary_default.missing_reasons.get("missing_price_no_snapshot") == 1
 
     universe_allow_missing = universe_factory(ALLOW_MISSING_DATA_TO_SHORTLIST="true")
     monkeypatch.setattr(
@@ -205,7 +207,7 @@ def test_shortlist_missing_modes(universe_factory, monkeypatch):
 
     assert summary_allow.shortlisted_size == 1
     assert shortlisted_allow[0].needs_enrichment is True
-    assert "missing_price" in shortlisted_allow[0].missing_reasons
+    assert "missing_price_no_snapshot" in shortlisted_allow[0].missing_reasons
 
     instrument_call_unknown = Instrument(
         isin="CALL2",

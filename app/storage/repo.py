@@ -15,8 +15,18 @@ class EventRepository:
     def __init__(self, settings: Settings):
         self.session_factory = async_session_factory()
 
-    async def add_event(self, event: Event):
+    async def add_event(self, event: Event) -> bool:
         async with self.session_factory() as session:
+            minute_bucket = event.ts.replace(second=0, microsecond=0)
+            minute_end = minute_bucket + datetime.timedelta(minutes=1)
+            stmt = select(func.count(EventORM.id)).where(
+                EventORM.isin == event.isin,
+                EventORM.ts >= minute_bucket,
+                EventORM.ts < minute_end,
+            )
+            existing = int((await session.execute(stmt)).scalar() or 0)
+            if existing:
+                return False
             orm = EventORM(
                 isin=event.isin,
                 ts=event.ts,
@@ -33,6 +43,7 @@ class EventRepository:
             )
             session.add(orm)
             await session.commit()
+            return True
 
     async def list_recent(self, limit: int = 30) -> List[Event]:
         async with self.session_factory() as session:
@@ -116,7 +127,10 @@ class InstrumentRepository:
             if existing is None:
                 existing = InstrumentORM(isin=instrument.isin)
                 self.session.add(existing)
+            existing.instrument_uid = instrument.instrument_uid
             existing.figi = instrument.figi
+            existing.ticker = instrument.ticker
+            existing.class_code = instrument.class_code
             existing.name = instrument.name
             existing.issuer = instrument.issuer
             existing.nominal = instrument.nominal
@@ -124,11 +138,24 @@ class InstrumentRepository:
             existing.segment = instrument.segment
             existing.updated_at = instrument.eligibility_checked_at
             existing.amortization_flag = instrument.amortization_flag
+            existing.floating_coupon_flag = instrument.floating_coupon_flag
             existing.has_call_offer = instrument.has_call_offer
             existing.eligible = instrument.eligible
             existing.eligible_reason = instrument.eligible_reason
             existing.eligibility_checked_at = instrument.eligibility_checked_at
             existing.is_shortlisted = instrument.is_shortlisted
+        await self.session.commit()
+
+    async def update_ids(self, instrument: Instrument) -> None:
+        existing = await self.session.get(InstrumentORM, instrument.isin)
+        if existing is None:
+            existing = InstrumentORM(isin=instrument.isin)
+            self.session.add(existing)
+        existing.instrument_uid = instrument.instrument_uid
+        existing.figi = instrument.figi
+        existing.ticker = instrument.ticker
+        existing.class_code = instrument.class_code
+        existing.floating_coupon_flag = instrument.floating_coupon_flag
         await self.session.commit()
 
     async def list_all(self) -> list[Instrument]:
@@ -167,13 +194,17 @@ class InstrumentRepository:
     def _to_model(self, orm: InstrumentORM) -> Instrument:
         return Instrument(
             isin=orm.isin,
+            instrument_uid=orm.instrument_uid,
             figi=orm.figi,
+            ticker=orm.ticker,
+            class_code=orm.class_code,
             name=orm.name,
             issuer=orm.issuer,
             nominal=orm.nominal,
             maturity_date=orm.maturity_date,
             segment=orm.segment,
             amortization_flag=orm.amortization_flag,
+            floating_coupon_flag=orm.floating_coupon_flag,
             has_call_offer=orm.has_call_offer,
             eligible=orm.eligible,
             eligible_reason=orm.eligible_reason,

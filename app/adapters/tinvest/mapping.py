@@ -30,6 +30,31 @@ def _parse_lots(value) -> int:
         return 0
 
 
+def _parse_floating_coupon(payload: dict) -> bool | None:
+    value = (
+        payload.get("floating_coupon_flag")
+        or payload.get("floatingCouponFlag")
+        or payload.get("coupon_is_floating")
+        or payload.get("couponIsFloating")
+    )
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        lowered = value.strip().lower()
+        if lowered in {"true", "1", "yes"}:
+            return True
+        if lowered in {"false", "0", "no"}:
+            return False
+    coupon_type = payload.get("coupon_type") or payload.get("couponType")
+    if isinstance(coupon_type, str):
+        coupon_type = coupon_type.strip().upper()
+        if coupon_type in {"FLOAT", "FLOATING", "VARIABLE"}:
+            return True
+        if coupon_type in {"FIXED", "CONSTANT"}:
+            return False
+    return None
+
+
 def map_instrument_payload(payload: dict) -> Instrument:
     maturity = payload.get("maturity_date")
     if isinstance(maturity, str):
@@ -53,6 +78,7 @@ def map_instrument_payload(payload: dict) -> Instrument:
         maturity_date=maturity_date,
         segment=payload.get("segment"),
         amortization_flag=payload.get("amortization_flag"),
+        floating_coupon_flag=_parse_floating_coupon(payload),
         has_call_offer=payload.get("has_call_offer"),
     )
 

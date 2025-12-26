@@ -23,13 +23,16 @@ class EventService:
         if not persist:
             return
         try:
-            await self.repo.add_event(event)
+            saved = await self.repo.add_event(event)
         except Exception as exc:
             self.metrics.record_event_save_error(type(exc).__name__)
             logger.exception("Failed to save event for %s", event.isin)
             raise
         else:
-            self.metrics.record_event_saved()
+            if saved:
+                self.metrics.record_event_saved()
+            else:
+                self.metrics.record_event_dedup_skipped()
 
     async def recent_events(self, limit: int = 30) -> List[Event]:
         return await self.repo.list_recent(limit=limit)

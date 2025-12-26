@@ -8,6 +8,9 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import List
 
+import grpc
+import httpx
+
 from ..adapters.tinvest.client import TInvestClient
 from ..adapters.tinvest.mapping import map_orderbook_payload
 from ..domain.models import Instrument, OrderBookSnapshot
@@ -149,33 +152,43 @@ class UniverseService:
         result: list[Instrument] = []
         for instrument in instruments:
             cached = cache.get(instrument.isin)
-            has_call_offer = await self._resolve_call_offer(instrument, cached)
             amortization_flag = instrument.amortization_flag
 
             eligible_reason = "missing_data"
             eligible = False
             offer_unknown = False
-            if instrument.maturity_date is None:
+            resolved_has_call_offer = instrument.has_call_offer
+            if self.settings.exclude_non_ru_isin and instrument.isin and not instrument.isin.startswith("RU"):
+                eligible_reason = "non_ru_isin"
+            elif self.settings.exclude_floating_coupon and instrument.floating_coupon_flag:
+                eligible_reason = "floating_coupon"
+            elif instrument.maturity_date is None:
                 eligible_reason = "missing_maturity_date"
             elif amortization_flag is True:
                 eligible_reason = "amortization"
-            elif has_call_offer is True:
-                eligible_reason = "call_offer"
-            elif has_call_offer is None:
-                offer_unknown = True
-                if self.settings.exclude_call_offer_unknown:
-                    eligible_reason = "call_offer_unknown"
-                else:
+            else:
+                resolved_has_call_offer = await self._resolve_call_offer(instrument, cached)
+                if resolved_has_call_offer is True:
+                    eligible_reason = "call_offer"
+                elif resolved_has_call_offer is None:
+                    offer_unknown = True
+                    if self.settings.exclude_call_offer_unknown:
+                        eligible_reason = "call_offer_unknown"
+                    else:
+                        eligible_reason = "ok"
+                        eligible = True
+                elif amortization_flag is False and resolved_has_call_offer is False:
                     eligible_reason = "ok"
                     eligible = True
-            elif amortization_flag is False and has_call_offer is False:
-                eligible_reason = "ok"
-                eligible = True
 
             updated = self._copy_instrument(
                 instrument,
                 {
-                    "has_call_offer": has_call_offer,
+                    "has_call_offer": (
+                        cached.has_call_offer
+                        if cached and self._should_use_cache(cached, instrument)
+                        else resolved_has_call_offer
+                    ),
                     "amortization_flag": amortization_flag,
                     "offer_unknown": offer_unknown,
                     "eligible": eligible,
@@ -201,6 +214,7 @@ class UniverseService:
         now = datetime.utcnow()
         max_age = timedelta(seconds=self.settings.price_max_age_s)
         price_enriched = 0
+        id_enrich_errors: dict[str, str] = {}
 
         def track_exclusion(reason: str):
             exclusion_reasons[reason] = exclusion_reasons.get(reason, 0) + 1
@@ -224,24 +238,40 @@ class UniverseService:
             enrichment_rank = 1 if not inst.needs_enrichment else 0
             return (enrichment_rank, updates, notional)
 
-        missing_price_isins = [
-            inst.isin
-            for inst in eligible
-            if self._snapshot_missing_price(latest_snapshots.get(inst.isin), now=now, max_age=max_age)
-        ]
+        if self.settings.universe_enrich_ids_on_rebuild and self.client.rest.enabled:
+            _, id_enrich_errors = await self._enrich_ids(eligible)
+
+        missing_price_by_isin: dict[str, list[str]] = {}
+        for inst in eligible:
+            reasons = self._snapshot_missing_reasons(
+                latest_snapshots.get(inst.isin), now=now, max_age=max_age
+            )
+            if reasons:
+                missing_price_by_isin[inst.isin] = reasons
+
+        missing_price_isins = list(missing_price_by_isin.keys())
         if missing_price_isins and self.settings.universe_enrich_prices_on_rebuild:
-            price_enriched, enriched_snapshots = await self._enrich_prices(
+            price_enriched, enriched_snapshots, price_enrich_errors = await self._enrich_prices(
                 [inst for inst in eligible if inst.isin in missing_price_isins]
             )
             latest_snapshots.update(enriched_snapshots)
+            for isin, reason in price_enrich_errors.items():
+                missing_price_by_isin.setdefault(isin, []).append(reason)
 
         filtered: list[Instrument] = []
         for inst in eligible:
             metrics = liveness_metrics.get(inst.isin)
             missing = self._instrument_missing_reasons(inst)
             latest_snapshot = latest_snapshots.get(inst.isin)
-            if self._snapshot_missing_price(latest_snapshot, now=now, max_age=max_age):
-                missing.append("missing_price")
+            missing_price_reasons = self._snapshot_missing_reasons(
+                latest_snapshot, now=now, max_age=max_age
+            )
+            if missing_price_reasons:
+                missing.extend(missing_price_reasons)
+                if not self._has_instrument_id(inst):
+                    missing.append("missing_price_instrument_id_missing")
+                if inst.isin in id_enrich_errors:
+                    missing.append("missing_price_id_enrich_failed")
 
             if missing:
                 inst.missing_reasons = missing
@@ -358,34 +388,62 @@ class UniverseService:
     def _snapshot_price(self, snap: OrderBookSnapshot) -> float | None:
         return price_from_snapshot(snap)["mid"]
 
-    def _snapshot_missing_price(
+    def _snapshot_missing_reasons(
         self,
         snapshot: OrderBookSnapshot | None,
         *,
         now: datetime,
         max_age: timedelta,
-    ) -> bool:
+    ) -> list[str]:
         if snapshot is None:
-            return True
+            return ["missing_price_no_snapshot"]
         snapshot_ts = snapshot.ts
         if snapshot_ts.tzinfo is None:
             snapshot_ts = snapshot_ts.replace(tzinfo=timezone.utc)
         if now.tzinfo is None:
             now = now.replace(tzinfo=timezone.utc)
         if now - snapshot_ts > max_age:
+            return ["missing_price_snapshot_stale"]
+        if not snapshot.bids and not snapshot.asks:
+            return ["missing_price_snapshot_empty"]
+        if self._snapshot_price(snapshot) is None:
+            return ["missing_price_snapshot_empty"]
+        return []
+
+    def _has_instrument_id(self, instrument: Instrument) -> bool:
+        return bool(
+            instrument.instrument_uid
+            or instrument.figi
+            or (instrument.ticker and instrument.class_code)
+        )
+
+    def _needs_id_enrichment(self, instrument: Instrument) -> bool:
+        if instrument.instrument_uid is None:
             return True
-        return self._snapshot_price(snapshot) is None
+        if not instrument.figi:
+            return True
+        if self._is_suspect_figi(instrument.figi):
+            return True
+        return False
+
+    def _is_suspect_figi(self, figi: str | None) -> bool:
+        if not figi:
+            return True
+        upper = figi.upper()
+        if upper.startswith("TCS"):
+            return True
+        return False
 
     async def _enrich_prices(
         self,
         instruments: list[Instrument],
-    ) -> tuple[int, dict[str, OrderBookSnapshot]]:
+    ) -> tuple[int, dict[str, OrderBookSnapshot], dict[str, str]]:
         limit = max(0, self.settings.universe_enrich_prices_limit)
         if limit == 0:
-            return 0, {}
+            return 0, {}, {}
         candidates = [inst for inst in instruments if inst.isin][:limit]
         if not candidates:
-            return 0, {}
+            return 0, {}, {}
 
         concurrency = self.settings.universe_enrich_prices_concurrency
         if concurrency <= 0:
@@ -405,6 +463,7 @@ class UniverseService:
         counter_lock = asyncio.Lock()
         price_enriched = 0
         snapshots: dict[str, OrderBookSnapshot] = {}
+        errors: dict[str, str] = {}
         metrics = get_metrics()
 
         async def fetch_and_persist(inst: Instrument) -> None:
@@ -413,6 +472,11 @@ class UniverseService:
                 await rate_limit()
                 metrics.record_universe_price_enrich_attempt()
                 try:
+                    if not self._has_instrument_id(inst):
+                        metrics.record_universe_price_enrich_error("missing_instrument_id")
+                        async with counter_lock:
+                            errors[inst.isin] = "missing_price_instrument_id_missing"
+                        return
                     snapshot = await self.client.fetch_orderbook_snapshot(
                         inst,
                         depth=1,
@@ -420,6 +484,8 @@ class UniverseService:
                     )
                     if snapshot is None:
                         metrics.record_universe_price_enrich_error("empty_snapshot")
+                        async with counter_lock:
+                            errors[inst.isin] = "missing_price_unary_empty"
                         return
                     snapshot.isin = inst.isin
                     await self._persist_snapshot(snapshot)
@@ -429,10 +495,106 @@ class UniverseService:
                     metrics.record_universe_price_enrich_success()
                 except Exception as exc:
                     reason = type(exc).__name__ or "unknown"
+                    error_reason = "missing_price_unary_error"
+                    if isinstance(exc, grpc.aio.AioRpcError):
+                        code = exc.code()
+                        reason = code.name if code else reason
+                        if code == grpc.StatusCode.DEADLINE_EXCEEDED:
+                            error_reason = "missing_price_unary_timeout"
+                        elif code == grpc.StatusCode.NOT_FOUND:
+                            error_reason = "missing_price_unary_not_found"
+                    elif isinstance(exc, asyncio.TimeoutError):
+                        error_reason = "missing_price_unary_timeout"
                     metrics.record_universe_price_enrich_error(reason)
+                    async with counter_lock:
+                        errors[inst.isin] = error_reason
 
         await asyncio.gather(*(fetch_and_persist(inst) for inst in candidates))
-        return price_enriched, snapshots
+        return price_enriched, snapshots, errors
+
+    async def _enrich_ids(
+        self,
+        instruments: list[Instrument],
+    ) -> tuple[int, dict[str, str]]:
+        limit = max(0, self.settings.universe_enrich_ids_limit)
+        if limit == 0:
+            return 0, {}
+        candidates = [inst for inst in instruments if self._needs_id_enrichment(inst)][:limit]
+        if not candidates:
+            return 0, {}
+
+        concurrency = max(1, self.settings.universe_enrich_ids_concurrency)
+        rate_limit = self._build_rate_limiter(rps=self.settings.universe_enrich_ids_rps)
+        timeout_s = self.settings.universe_enrich_ids_timeout_s
+
+        semaphore = asyncio.Semaphore(concurrency)
+        counter_lock = asyncio.Lock()
+        updated = 0
+        errors: dict[str, str] = {}
+        metrics = get_metrics()
+
+        async def fetch_and_update(inst: Instrument) -> None:
+            nonlocal updated
+            async with semaphore:
+                await rate_limit()
+                metrics.record_universe_id_enrich_attempt()
+                try:
+                    query = inst.isin or inst.ticker
+                    if not query:
+                        metrics.record_universe_id_enrich_error("missing_query")
+                        async with counter_lock:
+                            errors[inst.isin] = "missing_price_instrument_id_missing"
+                        return
+                    enriched = await self.client.find_instrument(
+                        query=query,
+                        instrument_kind="BOND",
+                        timeout=timeout_s,
+                    )
+                    if enriched is None and inst.ticker and inst.ticker != inst.isin:
+                        enriched = await self.client.find_instrument(
+                            query=inst.ticker,
+                            instrument_kind="BOND",
+                            timeout=timeout_s,
+                        )
+                    if enriched is None:
+                        metrics.record_universe_id_enrich_error("not_found")
+                        async with counter_lock:
+                            errors[inst.isin] = "missing_price_unary_not_found"
+                        return
+                    updates = {
+                        "instrument_uid": enriched.get("instrument_uid"),
+                        "figi": enriched.get("figi"),
+                        "ticker": enriched.get("ticker") or inst.ticker,
+                        "class_code": enriched.get("class_code") or inst.class_code,
+                        "floating_coupon_flag": (
+                            enriched.get("floating_coupon_flag")
+                            if enriched.get("floating_coupon_flag") is not None
+                            else inst.floating_coupon_flag
+                        ),
+                    }
+                    updated_inst = self._copy_instrument(inst, updates)
+                    async with self.session_factory() as session:
+                        repo = InstrumentRepository(session)
+                        await repo.update_ids(updated_inst)
+                    async with counter_lock:
+                        inst.instrument_uid = updated_inst.instrument_uid
+                        inst.figi = updated_inst.figi
+                        inst.ticker = updated_inst.ticker
+                        inst.class_code = updated_inst.class_code
+                        inst.floating_coupon_flag = updated_inst.floating_coupon_flag
+                        updated += 1
+                    metrics.record_universe_id_enrich_success()
+                except Exception as exc:
+                    reason = type(exc).__name__ or "unknown"
+                    error_reason = "missing_price_id_enrich_failed"
+                    if isinstance(exc, (asyncio.TimeoutError, httpx.TimeoutException)):
+                        error_reason = "missing_price_unary_timeout"
+                    metrics.record_universe_id_enrich_error(reason)
+                    async with counter_lock:
+                        errors[inst.isin] = error_reason
+
+        await asyncio.gather(*(fetch_and_update(inst) for inst in candidates))
+        return updated, errors
 
     def _build_rate_limiter(self, *, rps: float):
         rate = max(rps, 0.1)

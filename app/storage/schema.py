@@ -10,7 +10,10 @@ from .db import Base
 class InstrumentORM(Base):
     __tablename__ = "instruments"
     isin: Mapped[str] = mapped_column(String, primary_key=True)
+    instrument_uid: Mapped[str | None]
     figi: Mapped[str | None]
+    ticker: Mapped[str | None]
+    class_code: Mapped[str | None]
     name: Mapped[str]
     issuer: Mapped[str | None]
     nominal: Mapped[float]
@@ -18,6 +21,7 @@ class InstrumentORM(Base):
     segment: Mapped[str | None]
     updated_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     amortization_flag: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    floating_coupon_flag: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
     has_call_offer: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
     eligible: Mapped[bool] = mapped_column(Boolean, default=False)
     eligible_reason: Mapped[str | None]
